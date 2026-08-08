@@ -11,7 +11,7 @@ It combines:
 
 Current desktop release line in this repo:
 
-- `token-workshed`: `0.0.1`
+- `token-workshed`: `0.1.5`
 - `vllm-mlx`: `0.2.6`
 
 ## Highlights
@@ -103,17 +103,17 @@ Output:
 ### Build `.pkg` installer
 
 ```bash
-bash scripts/build_pkg_installer.sh 0.0.1 0.2.6 3.12.8
+bash scripts/build_pkg_installer.sh 0.1.5 0.2.6 3.12.8
 ```
 
 Output:
 
-- `dist/token-workshed-0.0.1-installer.pkg`
+- `dist/token-workshed-0.1.5-installer.pkg`
 
 ### Install generated `.pkg`
 
 ```bash
-sudo installer -pkg "dist/token-workshed-0.0.1-installer.pkg" -target /
+sudo installer -pkg "dist/token-workshed-0.1.5-installer.pkg" -target /
 open "/Applications/token-workshed.app"
 ```
 
