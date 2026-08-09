@@ -117,18 +117,6 @@ sudo installer -pkg "dist/token-workshed-0.1.5-installer.pkg" -target /
 open "/Applications/token-workshed.app"
 ```
 
-## Project Layout
-
-```text
-vllm_mlx/
-  desktop_ui.py              # desktop manager + manager API endpoints
-  css_svg_ui.py              # web UI backend (FastAPI)
-  ui_css_svg/                # frontend assets (HTML/CSS/JS)
-scripts/
-  token_workshed_app_entry.py
-  build_pkg_installer.sh
-token-workshed.spec          # PyInstaller spec
-```
 
 ## Troubleshooting
 
