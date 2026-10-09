@@ -9,6 +9,7 @@ __pycache__/
 # Distribution / packaging
 .Python
 build/
+native-ui/target/
 develop-eggs/
 dist/
 downloads/
@@ -29,6 +30,7 @@ MANIFEST
 # PyInstaller
 *.manifest
 *.spec
+!token-workshed.spec
 
 # Installer logs
 pip-log.txt
@@ -47,6 +49,7 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+.ruff_cache/
 cover/
 
 # Translations
@@ -55,12 +58,22 @@ cover/
 
 # Environments
 .env
+.env.*
+!.env.example
 .venv
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Dependency and local QA output
+node_modules/
+**/node_modules/
+/integrations/node-runtime/bin/node
+/design-qa.md
+/docs/testing/2026-10-08-native-ui-smoke-test.md
+/docs/quantization/2026-09-30-workshed-smoke-test.md
 
 # IDE
 .idea/
@@ -87,6 +100,26 @@ venv.bak/
 # Logs
 *.log
 logs/
+
+# Local agent/runtime state (may contain credentials or conversations)
+.openclaw/
+**/.token-workshed-state/
+/memory/
+/MEMORY.md
+
+# Local Codex task metadata (not part of the public source release)
+/.codex/
+/AGENTS.md
+/BOOTSTRAP.md
+/HEARTBEAT.md
+/IDENTITY.md
+/SOUL.md
+/TOOLS.md
+/USER.md
+
+# Generated benchmark output
+/gsm8k_qwen3_0.6b_results.json
+/vlm_benchmark_results.json
 
 # Temporary files
 tmp/

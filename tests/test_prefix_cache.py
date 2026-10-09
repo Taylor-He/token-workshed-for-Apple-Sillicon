@@ -222,6 +222,28 @@ class TestPrefixCacheManager:
         # Returns the same object (no deep copy overhead)
         assert cache is original
 
+    def test_longer_match_trim_does_not_mutate_cached_entry(self, cache_manager):
+        """Longer-match trimming should clone cache metadata before mutating it."""
+
+        class TrimmableCache:
+            def __init__(self, size):
+                self.size = size
+
+            def trim(self, num_tokens):
+                self.size -= num_tokens
+
+        original_cache = [TrimmableCache(size=5)]
+        cache_manager.store_cache([1, 2, 3, 4, 5], original_cache)
+
+        trimmed_cache, remaining = cache_manager.fetch_cache([1, 2, 3])
+
+        assert remaining == []
+        assert trimmed_cache is not None
+        assert trimmed_cache is not original_cache
+        assert trimmed_cache[0] is not original_cache[0]
+        assert trimmed_cache[0].size == 3
+        assert original_cache[0].size == 5
+
     def test_multiple_prefixes(self, cache_manager):
         """Test multiple different prefixes."""
         cache_manager.store_cache([1, 2], ["cache_a"])

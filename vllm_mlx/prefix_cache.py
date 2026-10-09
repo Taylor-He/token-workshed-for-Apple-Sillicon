@@ -209,7 +209,7 @@ class PrefixCacheManager:
                 if self._can_trim_cache(prompt_cache):
                     trim_amount = len(longer) - len(tokens)
                     trimmed_cache = self._trim_cache(
-                        copy.deepcopy(prompt_cache), trim_amount
+                        self._clone_cache_for_trim(prompt_cache), trim_amount
                     )
                     self.stats.hits += 1
                     self.stats.tokens_saved += len(tokens)
@@ -325,6 +325,16 @@ class PrefixCacheManager:
         if hasattr(first_cache, "is_trimmable"):
             return first_cache.is_trimmable()
         return hasattr(first_cache, "trim")
+
+    def _clone_cache_for_trim(self, prompt_cache: List[Any]) -> List[Any]:
+        """Clone cache metadata cheaply before in-place trim operations."""
+        cloned_cache = []
+        for cache in prompt_cache:
+            try:
+                cloned_cache.append(copy.copy(cache))
+            except Exception:
+                cloned_cache.append(copy.deepcopy(cache))
+        return cloned_cache
 
     def _trim_cache(self, prompt_cache: List[Any], num_tokens: int) -> List[Any]:
         """Trim cache by removing num_tokens from the end."""

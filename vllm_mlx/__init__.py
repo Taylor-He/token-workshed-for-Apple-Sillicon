@@ -12,7 +12,7 @@ Features:
 - Support for LLM and multimodal models
 """
 
-__version__ = "0.2.5"
+from .version import TOKEN_WORKSHED_VERSION, __version__
 
 # All imports are lazy to allow usage on non-Apple Silicon platforms
 # (e.g., CI running on Linux) where mlx_lm is not available.
@@ -129,4 +129,5 @@ __all__ = [
     "VLMCacheStats",
     # Version
     "__version__",
+    "TOKEN_WORKSHED_VERSION",
 ]

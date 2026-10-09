@@ -789,6 +789,17 @@ class MemoryAwarePrefixCache:
             f"freed {entry.memory_bytes / _BYTES_PER_MB:.2f}MB"
         )
 
+    def _upsert_loaded_entry(self, entry: _CacheEntry) -> None:
+        """Insert or replace a loaded entry without duplicating sorted keys."""
+        existing = self._entries.pop(entry.tokens, None)
+        if existing is not None:
+            self._current_memory -= existing.memory_bytes
+            self._remove_from_sorted(entry.tokens)
+
+        self._entries[entry.tokens] = entry
+        self._current_memory += entry.memory_bytes
+        bisect.insort(self._sorted_keys, entry.tokens)
+
     def remove(self, tokens: list[int]) -> bool:
         """
         Remove a specific cache entry.
@@ -981,37 +992,37 @@ class MemoryAwarePrefixCache:
                 arr = _array.array("i")
                 with open(tokens_path, "rb") as f:
                     arr.fromfile(f, entry_meta["num_tokens"])
-                tokens = list(arr)
+                tokens_key = tuple(arr)
 
                 # Load KV cache
                 cache = load_prompt_cache(entry_path)
 
                 # Estimate memory
                 memory = estimate_kv_cache_memory(cache)
+                existing = self._entries.get(tokens_key)
+                existing_memory = existing.memory_bytes if existing is not None else 0
 
                 # Check if it fits
-                if self._current_memory + memory > self._max_memory:
+                projected_memory = self._current_memory - existing_memory + memory
+                if projected_memory > self._max_memory:
                     logger.info(
                         f"[cache_persist] entry {i} would exceed memory limit "
-                        f"({(self._current_memory + memory) / _BYTES_PER_MB:.0f}MB > "
+                        f"({projected_memory / _BYTES_PER_MB:.0f}MB > "
                         f"{self._max_memory / _BYTES_PER_MB:.0f}MB), stopping load"
                     )
                     break
 
-                tokens_key = tuple(tokens)
                 entry = _CacheEntry(
                     tokens=tokens_key,
                     cache=cache,
                     memory_bytes=memory,
                 )
-                self._entries[tokens_key] = entry
-                self._current_memory += memory
-                bisect.insort(self._sorted_keys, tokens_key)
+                self._upsert_loaded_entry(entry)
                 loaded += 1
 
                 logger.info(
                     f"[cache_persist] loaded entry {i}: "
-                    f"{len(tokens)} tokens, "
+                    f"{len(tokens_key)} tokens, "
                     f"{memory / _BYTES_PER_MB:.1f}MB KV"
                 )
 

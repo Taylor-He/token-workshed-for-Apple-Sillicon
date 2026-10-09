@@ -3,11 +3,18 @@ const CHAT_MEMORY_KEY = "vllm_mlx_css_svg_chat_memory_v1";
 const CHAT_SESSIONS_KEY = "vllm_mlx_css_svg_chat_sessions_v1";
 const CHAT_ACTIVE_ID_KEY = "vllm_mlx_css_svg_chat_active_id_v1";
 const MODEL_PREF_KEY = "vllm_mlx_css_svg_model_pref_v1";
+const MANAGER_TOKEN_KEY = "vllm_mlx_css_svg_manager_token_v1";
 const EMPTY_RESPONSE_SENTINEL = "__VLLM_MLX_EMPTY_RESPONSE__";
 const MAX_MEDIA_ITEMS = 4;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 35 * 1024 * 1024;
 const MAX_CONVERSATIONS = 60;
+const HIDDEN_UTILITY_MODELS = new Set([
+  "mlx-community/functiongemma-270m-it-4bit",
+  "mlx-community/functiongemma-270m-int4",
+  "functiongemma-270m-it-4bit",
+  "functiongemma-270m-int4",
+]);
 const THINKING_HEADER_RE =
   /^\s{0,3}(?:#{1,6}\s*)?(?:thinking process|reasoning|思考过程|推理过程|思考)\s*:?\s*/i;
 const FINAL_ANSWER_HEADER_RE =
@@ -27,6 +34,21 @@ const LANG_FULL = {
   ja: "日本語",
   ar: "العربية",
 };
+const SERVER_MODE_OPTIONS = [
+  { enabled: true, key: "ON" },
+  { enabled: false, key: "OFF" },
+];
+const CHAT_DISPATCH_MODES = new Set(["single", "parallel"]);
+const OPENCLAW_TOOL_PROFILES = new Set(["auto", "full"]);
+const OPENCLAW_SMALL_MODEL_HINT_RE =
+  /(?:^|[-_/])(?:0?\.\d+b|[1-3](?:\.\d+)?b|[1-9]\d{0,2}m|tiny|mini|small|nano|micro|lite)(?:$|[-_/])/i;
+const OPENCLAW_SIZE_TOKEN_RE = /(?:^|[-_/])(\d+(?:\.\d+)?)([bkm])(?=$|[-_/])/i;
+const OPENCLAW_SIZE_WORD_RE =
+  /(?:^|[-_/])(nano|tiny|mini|micro|small|medium|med|large|xl|xxl)(?=$|[-_/])/i;
+const OPENCLAW_LOW_QUALITY_QUANT_RE = /(?:^|[-_])(?:q2|q3|int2|int3)(?:$|[-_])/i;
+const OPENCLAW_SUPPORTED_MODEL_RE =
+  /(?:qwen|llama|mistral|deepseek|kimi|moonshot|functionary|glm|granite|nemotron|xlam|hermes|nous|gpt-oss|harmony)/i;
+const PROXIMITY_GLASS_CARD_SELECTOR = ".card:not(.sidebar):not(.hf-bind-card):not(.composer-card)";
 const I18N_BASE = (
   typeof window !== "undefined"
   && window.NG_I18N_TABLES
@@ -60,17 +82,34 @@ const I18N_EXTRA = {
     "Apply & Restart": "应用并重启",
     "Changing runtime options restarts the active model process.": "修改运行参数会重启当前模型进程。",
     "Request Settings": "请求设置",
+    "Server Settings": "服务设置",
     "Server URL": "服务器地址",
+    "Server Mode": "服务模式",
+    "Manager API Token": "管理接口令牌",
+    "Only required when desktop manager auth is enabled.": "仅在启用桌面管理鉴权时需要。",
+    "Closing the desktop window keeps token-workshed running in status bar tray.": "关闭桌面窗口后，token-workshed 会继续在状态栏托盘中运行。",
+    "Server mode controls request routing and background running behavior.": "服务模式控制请求路由和后台运行行为。",
+    "When enabled in desktop app, closing the window keeps token-workshed running in background.": "在桌面版中开启后，关闭窗口也会让 token-workshed 保持后台运行。",
+    "Server mode is ON. UI requests are enabled, and closing window keeps background service alive.": "服务模式已开启：允许 UI 请求，且关闭窗口后服务保持后台运行。",
+    "Server mode is OFF. UI requests are paused, and closing window will stop the app.": "服务模式已关闭：暂停 UI 请求，且关闭窗口会停止应用。",
     "Max Tokens": "最大 Tokens",
     "Temperature": "温度",
+    "ON": "开启",
+    "OFF": "关闭",
     "System Prompt": "系统提示词",
     "Request settings are stored in your browser localStorage for this UI.": "请求设置会保存在浏览器 localStorage 中。",
     "Language": "语言",
-    "Model and request controls are now under Model Settings.": "模型与请求控制项已移动到 Model Settings。",
+    "Model controls are under Model Settings.": "模型控制项位于 Model Settings 页面。",
+    "Server mode controls are under Server Mode.": "服务相关控制项位于 Server Mode 页面。",
     "Use this page for UI-level actions.": "此页面用于应用级操作。",
     "Open Model Settings": "打开模型设置",
     "Clear UI Storage": "清空 UI 存储",
     "Clearing UI storage resets chat memory, model preferences, and request settings.": "清空 UI 存储会重置聊天记忆、模型偏好和请求设置。",
+    "Server mode enabled": "服务模式已开启",
+    "Server mode disabled": "服务模式已关闭",
+    "Server mode is OFF. Turn it on in Server Mode page first.": "服务模式已关闭，请先在 Server Mode 页面开启。",
+    "System prompt applies immediately to the next message. Press Enter to apply now, Shift+Enter for newline.": "System Prompt 会立即作用于下一条消息。按 Enter 立即应用，Shift+Enter 换行。",
+    "System prompt applied": "System Prompt 已应用",
     "Download & Deploy": "下载并部署",
     "Downloads": "下载量",
     "Likes": "点赞",
@@ -78,13 +117,21 @@ const I18N_EXTRA = {
     "Gated": "受限",
     "Deep": "深度",
     "Searching Hugging Face models...": "正在搜索 Hugging Face 模型...",
+    "Searching local + Hugging Face models...": "正在搜索本地与 Hugging Face 模型...",
     "No models found. Try another keyword.": "未找到模型，请换个关键词。",
+    "Search local + Hugging Face models (e.g. qwen, llama, granite)": "搜索本地与 Hugging Face 模型（如 qwen、llama、granite）",
+    "Switch Now": "立即切换",
+    "Run as Extra": "并行运行",
+    "Stop Extra": "停止并行",
+    "Active": "当前激活",
+    "OpenClaw": "OpenClaw",
     "Type your message... (Enter to send, Shift+Enter newline)": "输入消息...（Enter 发送，Shift+Enter 换行）",
     "Optional system instruction sent before user history.": "可选系统指令，会在用户历史前发送。",
     "Search Hugging Face models (e.g. qwen, llama, granite)": "搜索 Hugging Face 模型（如 qwen、llama、granite）",
     "Models": "模型",
     "Settings": "设置",
     "Delete": "删除",
+    "Delete model": "删除模型",
     "Pause": "暂停",
     "Resume": "继续",
     "Cancel": "取消",
@@ -99,6 +146,12 @@ const I18N_EXTRA = {
     "New Conversation": "新会话",
     "Started a new conversation": "已开始新会话",
     "Conversation deleted": "会话已删除",
+    "Enable openclaw/hermes": "启用 openclaw/hermes",
+    "Agent Runtime": "Agent 引擎",
+    "Chat Dispatch Mode": "对话分发模式",
+    "Single (active model)": "单模型（当前激活）",
+    "Parallel (all running models)": "并行（所有运行中模型）",
+    "Parallel mode sends the same prompt to all running models and merges their replies.": "并行模式会把同一问题发送给所有运行中模型，并合并回复。",
   },
   fr: {
     "Model Settings": "Paramètres du modèle",
@@ -123,6 +176,7 @@ const I18N_EXTRA = {
     "Models": "Modèles",
     "Settings": "Paramètres",
     "Delete": "Supprimer",
+    "Delete model": "Supprimer le modèle",
     "Pause": "Pause",
     "Resume": "Reprendre",
     "Cancel": "Annuler",
@@ -161,6 +215,7 @@ const I18N_EXTRA = {
     "Models": "Modelos",
     "Settings": "Configuración",
     "Delete": "Eliminar",
+    "Delete model": "Eliminar modelo",
     "Pause": "Pausar",
     "Resume": "Reanudar",
     "Cancel": "Cancelar",
@@ -199,6 +254,7 @@ const I18N_EXTRA = {
     "Models": "Modelle",
     "Settings": "Einstellungen",
     "Delete": "Löschen",
+    "Delete model": "Modell löschen",
     "Pause": "Pausieren",
     "Resume": "Fortsetzen",
     "Cancel": "Abbrechen",
@@ -237,6 +293,7 @@ const I18N_EXTRA = {
     "Models": "Modelli",
     "Settings": "Impostazioni",
     "Delete": "Elimina",
+    "Delete model": "Elimina modello",
     "Pause": "Pausa",
     "Resume": "Riprendi",
     "Cancel": "Annulla",
@@ -275,6 +332,7 @@ const I18N_EXTRA = {
     "Models": "モデル",
     "Settings": "設定",
     "Delete": "削除",
+    "Delete model": "モデルを削除",
     "Pause": "一時停止",
     "Resume": "再開",
     "Cancel": "キャンセル",
@@ -313,6 +371,7 @@ const I18N_EXTRA = {
     "Models": "النماذج",
     "Settings": "الإعدادات",
     "Delete": "حذف",
+    "Delete model": "حذف النموذج",
     "Pause": "إيقاف مؤقت",
     "Resume": "استئناف",
     "Cancel": "إلغاء",
@@ -351,6 +410,7 @@ const COMMUNITY_DEV_BRAND = {
   "meta-llama": { short: "L", colorA: "#e0e7ff", colorB: "#bfdbfe" },
   qwen: { short: "QW", colorA: "#ede9fe", colorB: "#ddd6fe" },
   "ibm-granite": { short: "IBM", colorA: "#e2e8f0", colorB: "#cbd5e1" },
+  local: { short: "LC", colorA: "#fde68a", colorB: "#fca5a5" },
 };
 
 const SIZE_LABEL_RE = /^(\d+(?:\.\d+)?)([bkm])$/i;
@@ -420,8 +480,22 @@ const state = {
   selectedModel: "",
   selectedLocalModel: "",
   activeModel: "",
+  activeServerUrl: "",
+  modelServerUrls: {},
+  runningModels: [],
+  concurrentModels: [],
+  concurrentApplying: false,
   managerEnabled: false,
+  managerApiToken: "",
+  managerAuthRequired: false,
+  openclawWarmupInFlight: false,
+  openclawWarmupLastAt: 0,
+  openclawWarmupModel: "",
+  openclawWarmupServerUrl: "",
+  agentProbeCache: {},
+  agentRuntimeBlocklist: {},
   switchingModel: false,
+  modelSwitchVersion: 0,
   statusRefreshing: false,
   modelIntegrityReport: null,
   modelIntegrityNoticeKey: "",
@@ -441,7 +515,11 @@ const state = {
   community: {
     initialized: false,
     searching: false,
+    jobActionInFlight: false,
     query: "",
+    localCount: 0,
+    communityCount: 0,
+    openclawMode: false,
     results: [],
     sizePrefByFamily: {},
     currentJob: null,
@@ -463,12 +541,22 @@ const state = {
     server_url: "http://localhost:8000",
     max_tokens: 1024,
     temperature: 0.7,
+    server_mode_enabled: true,
+    openclaw_enabled: false,
+    agent_runtime: "auto",
+    openclaw_tool_profile: "auto",
+    chat_dispatch_mode: "single",
   },
   settings: {
     server_url: "http://localhost:8000",
     max_tokens: 1024,
     temperature: 0.7,
     system_prompt: "",
+    server_mode_enabled: true,
+    openclaw_enabled: false,
+    agent_runtime: "auto",
+    openclaw_tool_profile: "auto",
+    chat_dispatch_mode: "single",
   },
 };
 
@@ -483,9 +571,13 @@ const btnClear = document.getElementById("btnClear");
 const btnPing = document.getElementById("btnPing");
 const btnNewConversation = document.getElementById("btnNewConversation");
 const btnAttachMedia = document.getElementById("btnAttachMedia");
+const agentModeOpenclawBtn = document.getElementById("agentModeOpenclawBtn");
+const agentModeHermesBtn = document.getElementById("agentModeHermesBtn");
+const composerModelSelect = document.getElementById("composerModelSelect");
 const btnClearMedia = document.getElementById("btnClearMedia");
 const mediaInput = document.getElementById("mediaInput");
 const mediaPreview = document.getElementById("mediaPreview");
+const openclawToolProfileSelect = document.getElementById("openclawToolProfileSelect");
 const serverBadge = document.getElementById("serverBadge");
 const modelSelect = document.getElementById("modelSelect");
 const noModelBanner = document.getElementById("noModelBanner");
@@ -498,12 +590,20 @@ const btnHfBindSave = document.getElementById("btnHfBindSave");
 const btnHfBindSkip = document.getElementById("btnHfBindSkip");
 
 const serverUrlInput = document.getElementById("serverUrlInput");
+const managerTokenInput = document.getElementById("managerTokenInput");
+const concurrentModelsList = document.getElementById("concurrentModelsList");
+const concurrentModelsHint = document.getElementById("concurrentModelsHint");
+const btnApplyConcurrentModels = document.getElementById("btnApplyConcurrentModels");
+const btnClearConcurrentModels = document.getElementById("btnClearConcurrentModels");
+const chatDispatchModeSelect = document.getElementById("chatDispatchModeSelect");
 const maxTokensInput = document.getElementById("maxTokensInput");
 const temperatureRange = document.getElementById("temperatureRange");
 const temperatureInput = document.getElementById("temperatureInput");
 const systemPromptInput = document.getElementById("systemPromptInput");
 const btnSaveSettings = document.getElementById("btnSaveSettings");
 const btnResetSettings = document.getElementById("btnResetSettings");
+const serverModeToggle = document.getElementById("serverModeToggle");
+const serverModeStateHint = document.getElementById("serverModeStateHint");
 const btnGoModelSettings = document.getElementById("btnGoModelSettings");
 const btnClearUiStorage = document.getElementById("btnClearUiStorage");
 const langToggle = document.getElementById("langToggle");
@@ -532,7 +632,6 @@ const btnCommunityPause = document.getElementById("btnCommunityPause");
 const btnCommunityResume = document.getElementById("btnCommunityResume");
 const btnCommunityCancel = document.getElementById("btnCommunityCancel");
 
-const dashUptime = document.getElementById("dashUptime");
 const dashRequests = document.getElementById("dashRequests");
 const dashSuccessRate = document.getElementById("dashSuccessRate");
 const dashAvgLatency = document.getElementById("dashAvgLatency");
@@ -550,6 +649,20 @@ let pillTargetBtn = null;
 let hidePillTimer = null;
 let pressPillTimer = null;
 let noModelBannerTimer = null;
+let chatCopyHandlerBound = false;
+let systemPromptAutoSaveTimer = 0;
+let proximityGlassCards = [];
+let proximityGlassRaf = 0;
+let proximityPointerActive = false;
+let proximityPointerX = 0;
+let proximityPointerY = 0;
+let proximityGlassInitialized = false;
+let proximityGlassConfig = {
+  minBlur: 16,
+  maxBlur: 34,
+  maxGlow: 0.42,
+  radius: 300,
+};
 const langAnim = {
   from: state.lang,
   to: state.lang,
@@ -562,6 +675,112 @@ let langMeasureCtx = null;
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function parseProximityNumber(raw, fallback) {
+  const value = Number.parseFloat(String(raw || "").trim());
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function readProximityGlassConfigFromCss() {
+  const rootStyle = window.getComputedStyle(document.documentElement);
+  const minBlur = Math.max(0, parseProximityNumber(rootStyle.getPropertyValue("--glass-proximity-blur-min"), 16));
+  const maxBlurRaw = Math.max(0, parseProximityNumber(rootStyle.getPropertyValue("--glass-proximity-blur-max"), 34));
+  const maxGlow = Math.max(0, parseProximityNumber(rootStyle.getPropertyValue("--glass-proximity-glow-max"), 0.42));
+  const maxBlur = Math.max(minBlur, maxBlurRaw);
+  const radius = Math.max(220, (maxBlur - minBlur) * 15 + 220);
+  return { minBlur, maxBlur, maxGlow, radius };
+}
+
+function refreshProximityGlassCards() {
+  proximityGlassCards = Array.from(document.querySelectorAll(PROXIMITY_GLASS_CARD_SELECTOR));
+  proximityGlassCards.forEach((card) => card.classList.add("proximity-glass"));
+}
+
+function updateProximityGlassCards() {
+  if (!proximityGlassCards.length) return;
+  const { minBlur, maxBlur, maxGlow, radius } = proximityGlassConfig;
+  const blurSpan = Math.max(0, maxBlur - minBlur);
+
+  proximityGlassCards.forEach((card) => {
+    const rect = card.getBoundingClientRect();
+    const hasSize = rect.width > 1 && rect.height > 1;
+
+    let intensity = 0;
+    let xRatio = 0.5;
+    let yRatio = 0.5;
+
+    if (hasSize && proximityPointerActive) {
+      const centerX = rect.left + rect.width * 0.5;
+      const centerY = rect.top + rect.height * 0.5;
+      const distance = Math.hypot(proximityPointerX - centerX, proximityPointerY - centerY);
+      const linear = clamp(1 - distance / radius, 0, 1);
+      intensity = linear * linear;
+      xRatio = clamp((proximityPointerX - rect.left) / rect.width, 0, 1);
+      yRatio = clamp((proximityPointerY - rect.top) / rect.height, 0, 1);
+    }
+
+    const blur = minBlur + blurSpan * intensity;
+    const glow = maxGlow * intensity;
+
+    card.style.setProperty("--card-blur-live", `${blur.toFixed(2)}px`);
+    card.style.setProperty("--card-near-glow", glow.toFixed(3));
+    card.style.setProperty("--glass-near-x", `${(xRatio * 100).toFixed(2)}%`);
+    card.style.setProperty("--glass-near-y", `${(yRatio * 100).toFixed(2)}%`);
+  });
+}
+
+function scheduleProximityGlassUpdate() {
+  if (proximityGlassRaf) return;
+  proximityGlassRaf = window.requestAnimationFrame(() => {
+    proximityGlassRaf = 0;
+    updateProximityGlassCards();
+  });
+}
+
+function initProximityGlass() {
+  if (proximityGlassInitialized) return;
+  proximityGlassInitialized = true;
+
+  proximityGlassConfig = readProximityGlassConfigFromCss();
+  refreshProximityGlassCards();
+  scheduleProximityGlassUpdate();
+
+  window.addEventListener(
+    "pointermove",
+    (event) => {
+      if (event.pointerType === "touch") return;
+      proximityPointerActive = true;
+      proximityPointerX = event.clientX;
+      proximityPointerY = event.clientY;
+      scheduleProximityGlassUpdate();
+    },
+    { passive: true },
+  );
+
+  window.addEventListener(
+    "pointerout",
+    (event) => {
+      if (event.relatedTarget) return;
+      proximityPointerActive = false;
+      scheduleProximityGlassUpdate();
+    },
+    { passive: true },
+  );
+
+  window.addEventListener(
+    "resize",
+    () => {
+      proximityGlassConfig = readProximityGlassConfigFromCss();
+      scheduleProximityGlassUpdate();
+    },
+    { passive: true },
+  );
+
+  window.addEventListener("blur", () => {
+    proximityPointerActive = false;
+    scheduleProximityGlassUpdate();
+  });
 }
 
 function showToast(text, ms = 2200) {
@@ -627,7 +846,7 @@ function hideHfBindModal() {
 
 async function fetchHfBindingStatus() {
   try {
-    const response = await fetch("/api/manager/hf-binding");
+    const response = await managerFetch("/api/manager/hf-binding");
     if (!response.ok) {
       return null;
     }
@@ -662,7 +881,7 @@ async function saveHfBinding(options = {}) {
   btnHfBindSave.disabled = true;
   btnHfBindSkip.disabled = true;
   try {
-    const response = await fetch("/api/manager/hf-binding", {
+    const response = await managerFetch("/api/manager/hf-binding", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -698,7 +917,7 @@ async function saveHfBinding(options = {}) {
 async function maybeShowFirstRunHfBinding() {
   const data = await fetchHfBindingStatus();
   if (!data) return;
-  if (!state.hfBinding.seen) {
+  if (!state.hfBinding.hasToken) {
     showHfBindModal();
   }
 }
@@ -851,6 +1070,103 @@ function renderLangToggle() {
   }
 }
 
+function isServerModeEnabled() {
+  return true;
+}
+
+function renderServerModeStateHint() {
+  if (!serverModeStateHint) return;
+  serverModeStateHint.textContent = isServerModeEnabled()
+    ? t("Server mode is ON. UI requests are enabled, and closing window keeps background service alive.")
+    : t("Server mode is OFF. UI requests are paused, and closing window will stop the app.");
+}
+
+function renderServerModeToggle() {
+  if (!serverModeToggle) return;
+
+  const rect = serverModeToggle.getBoundingClientRect();
+  const totalWidth = (rect.width && rect.width >= 120) ? rect.width : 240;
+  const totalHeight = (rect.height && rect.height >= 30) ? rect.height : 38;
+  const activeEnabled = isServerModeEnabled();
+
+  serverModeToggle.classList.toggle("hovered", serverModeToggle.matches(":hover"));
+  serverModeToggle.innerHTML = "";
+
+  let x = 0;
+  for (let i = 0; i < SERVER_MODE_OPTIONS.length; i += 1) {
+    const item = SERVER_MODE_OPTIONS[i];
+    const segW = i === SERVER_MODE_OPTIONS.length - 1
+      ? Math.max(1, totalWidth - x)
+      : Math.max(1, Math.floor(totalWidth / SERVER_MODE_OPTIONS.length));
+    const isActive = item.enabled === activeEnabled;
+
+    const seg = document.createElement("button");
+    seg.type = "button";
+    seg.className = "lang-seg";
+    seg.style.left = `${x}px`;
+    seg.style.width = `${segW}px`;
+    seg.setAttribute("aria-label", item.key);
+    seg.addEventListener("click", () => {
+      setServerModeEnabled(item.enabled);
+    });
+
+    if (isActive) {
+      const maxIndW = Math.max(8, segW - 10);
+      const indW = Math.max(8, Math.min(maxIndW, 104));
+      const maxIndH = Math.max(8, totalHeight - 10);
+      const indH = Math.max(8, Math.min(maxIndH, 27));
+      const indLeft = (segW - indW) / 2;
+      const indTop = (totalHeight - indH) / 2;
+
+      const ind = document.createElement("div");
+      ind.className = "lang-ind";
+      ind.style.left = `${indLeft}px`;
+      ind.style.top = `${indTop}px`;
+      ind.style.width = `${indW}px`;
+      ind.style.height = `${indH}px`;
+
+      const label = document.createElement("span");
+      label.className = "lang-ind-label";
+      label.textContent = t(item.key);
+      label.style.opacity = "1";
+
+      ind.appendChild(label);
+      seg.appendChild(ind);
+    } else {
+      const shortNode = document.createElement("span");
+      shortNode.className = "lang-seg-short";
+      shortNode.textContent = t(item.key);
+      seg.appendChild(shortNode);
+    }
+
+    serverModeToggle.appendChild(seg);
+    x += segW;
+  }
+}
+
+function setServerModeEnabled(enabled, options = {}) {
+  const nextEnabled = Boolean(enabled);
+  const changed = nextEnabled !== isServerModeEnabled();
+  state.settings = normalizeSettings({
+    ...state.settings,
+    server_mode_enabled: nextEnabled,
+  });
+  renderServerModeToggle();
+  renderServerModeStateHint();
+
+  if (changed) {
+    saveStoredSettings();
+    void pushServerModePreferenceToManager(nextEnabled);
+    if (!(options && options.silentToast === true)) {
+      showToast(nextEnabled ? t("Server mode enabled") : t("Server mode disabled"), 1400);
+    }
+  }
+
+  if (!(options && options.refresh === false)) {
+    refreshStatus({ silent: true });
+  }
+}
+
 function applyLanguage() {
   document.documentElement.setAttribute("lang", state.lang);
 
@@ -866,10 +1182,21 @@ function applyLanguage() {
     systemPromptInput.placeholder = t("Optional system instruction sent before user history.");
   }
   if (communityQueryInput) {
-    communityQueryInput.placeholder = t("Search Hugging Face models (e.g. qwen, llama, granite)");
+    communityQueryInput.placeholder = t("Search local + Hugging Face models (e.g. qwen, llama, granite)");
+  }
+  if (btnSend) {
+    btnSend.title = "Send";
+    btnSend.setAttribute("aria-label", "Send");
+  }
+  updateMediaActionButton();
+  if (btnNewConversation) {
+    btnNewConversation.title = t("New Conversation");
+    btnNewConversation.setAttribute("aria-label", t("New Conversation"));
   }
 
   renderLangToggle();
+  renderServerModeToggle();
+  renderServerModeStateHint();
   renderCommunityJob(state.community.currentJob);
   renderCommunityResults();
   renderModelsList();
@@ -900,16 +1227,875 @@ function normalizeServerUrl(raw) {
   return value.replace(/\/+$/, "");
 }
 
+function safeNormalizeServerUrl(raw) {
+  const text = typeof raw === "string" ? raw.trim() : "";
+  if (!text) {
+    return "";
+  }
+  try {
+    return normalizeServerUrl(text);
+  } catch {
+    return "";
+  }
+}
+
+function normalizeModelServerUrls(input) {
+  const out = {};
+  if (!input || typeof input !== "object") {
+    return out;
+  }
+  Object.entries(input).forEach(([rawModel, rawUrl]) => {
+    const modelId = typeof rawModel === "string" ? rawModel.trim() : "";
+    const normalizedUrl = safeNormalizeServerUrl(rawUrl);
+    if (!modelId || !normalizedUrl) {
+      return;
+    }
+    out[modelId] = normalizedUrl;
+  });
+  return out;
+}
+
+function normalizeRunningModels(input) {
+  const out = [];
+  if (!Array.isArray(input)) {
+    return out;
+  }
+
+  input.forEach((item) => {
+    if (!item || typeof item !== "object") {
+      return;
+    }
+    const model = typeof item.model === "string" ? item.model.trim() : "";
+    if (!model) {
+      return;
+    }
+    const kindRaw = typeof item.kind === "string" ? item.kind.trim().toLowerCase() : "";
+    const kind = kindRaw === "extra" ? "extra" : "primary";
+    const portValue = Number.parseInt(String(item.port || "0"), 10);
+    const port = Number.isFinite(portValue) ? portValue : 0;
+    const serverUrl = safeNormalizeServerUrl(item.server_url);
+    out.push({
+      model,
+      kind,
+      port,
+      active: Boolean(item.active),
+      server_url: serverUrl,
+    });
+  });
+
+  return out;
+}
+
+function applyManagerRoutingData(payload) {
+  const routingSource = payload && typeof payload === "object" ? payload : {};
+  const runningModels = normalizeRunningModels(routingSource.running_models);
+  const directMap = normalizeModelServerUrls(routingSource.model_server_urls);
+  const mergedMap = { ...directMap };
+
+  runningModels.forEach((entry) => {
+    if (!entry.model || !entry.server_url) return;
+    if (!Object.prototype.hasOwnProperty.call(mergedMap, entry.model)) {
+      mergedMap[entry.model] = entry.server_url;
+    }
+  });
+
+  state.runningModels = runningModels;
+  state.modelServerUrls = mergedMap;
+  state.concurrentModels = normalizeModelList(routingSource.concurrent_models);
+  state.activeServerUrl = safeNormalizeServerUrl(routingSource.active_server_url);
+}
+
+function getPrimaryRunningModel() {
+  for (const item of state.runningModels) {
+    if (!item || item.kind !== "primary") continue;
+    if (typeof item.model === "string" && item.model.trim()) {
+      return item.model.trim();
+    }
+  }
+  return "";
+}
+
+function resolveChatServerUrl(modelId) {
+  const fallback = normalizeServerUrl(state.settings.server_url);
+  if (!state.managerEnabled) {
+    return fallback;
+  }
+  const model = typeof modelId === "string" ? modelId.trim() : "";
+  if (model) {
+    const mapped = state.modelServerUrls[model];
+    if (mapped) {
+      return mapped;
+    }
+    if (state.activeModel === model && state.activeServerUrl) {
+      return state.activeServerUrl;
+    }
+  }
+  return fallback;
+}
+
+function getChatDispatchMode() {
+  const raw = String(state.settings.chat_dispatch_mode || "single").trim().toLowerCase();
+  return CHAT_DISPATCH_MODES.has(raw) ? raw : "single";
+}
+
+function isParallelDispatchMode() {
+  return getChatDispatchMode() === "parallel";
+}
+
+function isModelRunning(modelId) {
+  const target = String(modelId || "").trim();
+  if (!target) return false;
+  return state.runningModels.some((entry) => entry && String(entry.model || "").trim() === target);
+}
+
+function getParallelTargetModels() {
+  const out = [];
+  const seen = new Set();
+  const addModel = (raw) => {
+    const value = String(raw || "").trim();
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    out.push(value);
+  };
+
+  addModel(state.selectedModel);
+  if (state.managerEnabled) {
+    state.runningModels.forEach((entry) => {
+      if (!entry || typeof entry !== "object") return;
+      addModel(entry.model);
+    });
+  } else {
+    state.models.forEach((modelId) => addModel(modelId));
+  }
+  return out;
+}
+
+function setConcurrentModelsControlsDisabled(disabled) {
+  const locked = Boolean(disabled) || !state.managerEnabled || state.concurrentApplying;
+  if (concurrentModelsList) {
+    const boxes = concurrentModelsList.querySelectorAll("input[data-concurrent-model-checkbox='1']");
+    boxes.forEach((box) => {
+      const input = box;
+      if (!input) return;
+      if (input.dataset.lockedPrimary === "1") {
+        input.disabled = true;
+      } else {
+        input.disabled = locked;
+      }
+    });
+  }
+  if (btnApplyConcurrentModels) {
+    btnApplyConcurrentModels.disabled = locked;
+  }
+  if (btnClearConcurrentModels) {
+    btnClearConcurrentModels.disabled = locked;
+  }
+}
+
+function renderConcurrentModelsSettings() {
+  if (!concurrentModelsList) return;
+
+  const controlsLocked =
+    state.sending || state.clearingChat || state.switchingModel || state.concurrentApplying;
+
+  concurrentModelsList.innerHTML = "";
+
+  if (!state.managerEnabled) {
+    const empty = document.createElement("div");
+    empty.className = "concurrent-models-empty";
+    empty.textContent = "Available only in desktop manager mode.";
+    concurrentModelsList.appendChild(empty);
+    if (concurrentModelsHint) {
+      concurrentModelsHint.textContent = "Concurrent model controls are available in desktop manager mode.";
+    }
+    setConcurrentModelsControlsDisabled(true);
+    return;
+  }
+
+  const allModels = normalizeModelList(state.models);
+  if (!allModels.length) {
+    const empty = document.createElement("div");
+    empty.className = "concurrent-models-empty";
+    empty.textContent = "No local models detected.";
+    concurrentModelsList.appendChild(empty);
+    if (concurrentModelsHint) {
+      concurrentModelsHint.textContent = "Install local models first, then enable concurrent extras here.";
+    }
+    setConcurrentModelsControlsDisabled(true);
+    return;
+  }
+
+  const primaryModel = getPrimaryRunningModel();
+  const selectedSet = new Set(normalizeModelList(state.concurrentModels));
+  const runningByModel = {};
+  state.runningModels.forEach((entry) => {
+    if (!entry || !entry.model) return;
+    runningByModel[entry.model] = entry;
+  });
+
+  allModels.forEach((modelId) => {
+    const row = document.createElement("div");
+    row.className = "concurrent-model-row";
+
+    const isPrimary = Boolean(primaryModel) && modelId === primaryModel;
+    const isChecked = isPrimary || selectedSet.has(modelId);
+    const runtime = runningByModel[modelId] || null;
+    const isRunning = Boolean(runtime);
+
+    const label = document.createElement("label");
+    label.className = "check-line";
+
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = modelId;
+    input.checked = isChecked;
+    input.dataset.concurrentModelCheckbox = "1";
+    input.dataset.lockedPrimary = isPrimary ? "1" : "0";
+    if (isPrimary || controlsLocked) {
+      input.disabled = true;
+    }
+    if (isPrimary) {
+      row.classList.add("disabled");
+    }
+
+    const dot = document.createElement("span");
+    dot.className = "check-dot";
+    dot.setAttribute("aria-hidden", "true");
+
+    const textWrap = document.createElement("span");
+    textWrap.className = "check-text-wrap";
+    const text = document.createElement("span");
+    text.className = "check-text";
+    text.textContent = modelId;
+    textWrap.appendChild(text);
+
+    const meta = document.createElement("span");
+    meta.className = "concurrent-model-meta";
+    const tags = [];
+    if (modelId === state.activeModel) {
+      tags.push("active");
+    }
+    if (runtime && runtime.kind === "primary") {
+      tags.push("primary");
+    } else if (isChecked) {
+      tags.push("extra");
+    }
+    if (isRunning && runtime && runtime.port > 0) {
+      tags.push(`running:${runtime.port}`);
+    } else if (isRunning) {
+      tags.push("running");
+    } else {
+      tags.push("stopped");
+    }
+    meta.textContent = tags.join(" | ");
+
+    label.appendChild(input);
+    label.appendChild(dot);
+    label.appendChild(textWrap);
+    label.appendChild(meta);
+    row.appendChild(label);
+    concurrentModelsList.appendChild(row);
+  });
+
+  const runningCount = state.runningModels.length;
+  const extraCount = state.concurrentModels.length;
+  if (concurrentModelsHint) {
+    concurrentModelsHint.textContent = `Running models: ${runningCount}. Extra models: ${extraCount}.`;
+  }
+  setConcurrentModelsControlsDisabled(controlsLocked);
+}
+
+function readConcurrentModelsSelection() {
+  if (!concurrentModelsList) {
+    return [];
+  }
+  const out = [];
+  const boxes = concurrentModelsList.querySelectorAll("input[data-concurrent-model-checkbox='1']");
+  boxes.forEach((box) => {
+    const input = box;
+    if (!input || input.dataset.lockedPrimary === "1") {
+      return;
+    }
+    if (!input.checked) {
+      return;
+    }
+    const modelId = String(input.value || "").trim();
+    if (!modelId) {
+      return;
+    }
+    out.push(modelId);
+  });
+  return normalizeModelList(out);
+}
+
+async function applyConcurrentModelsSelection(models) {
+  if (!state.managerEnabled) {
+    showToast("Desktop manager mode is required for concurrent models.", 2200);
+    return false;
+  }
+
+  state.concurrentApplying = true;
+  setConcurrentModelsControlsDisabled(true);
+
+  const selected = normalizeModelList(Array.isArray(models) ? models : []);
+  try {
+    const response = await managerFetch("/api/manager/concurrent-models", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ models: selected }),
+    });
+    const data = await response.json();
+    if (!response.ok || !data || data.ok !== true) {
+      const detail =
+        (data && (data.detail || data.error || data.message)) ||
+        "Failed to apply concurrent models";
+      throw new Error(String(detail));
+    }
+
+    applyManagerRoutingData(data);
+    renderConcurrentModelsSettings();
+    showToast(`Concurrent models updated (${state.concurrentModels.length} extras)`, 1800);
+    await refreshStatus({ silent: true });
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    showToast(`Concurrent model apply failed: ${message}`, 2600);
+    return false;
+  } finally {
+    state.concurrentApplying = false;
+    setConcurrentModelsControlsDisabled(
+      state.sending || state.clearingChat || state.switchingModel,
+    );
+  }
+}
+
+function loadStoredManagerToken() {
+  try {
+    const value = String(localStorage.getItem(MANAGER_TOKEN_KEY) || "").trim();
+    return value;
+  } catch {
+    return "";
+  }
+}
+
+function saveStoredManagerToken(token) {
+  try {
+    const clean = String(token || "").trim();
+    if (!clean) {
+      localStorage.removeItem(MANAGER_TOKEN_KEY);
+      return;
+    }
+    localStorage.setItem(MANAGER_TOKEN_KEY, clean);
+  } catch {
+    // Ignore storage errors.
+  }
+}
+
+function syncManagerTokenFromLocation() {
+  const searchParams = new URLSearchParams(window.location.search || "");
+  let token = String(searchParams.get("manager_token") || "").trim();
+  let nextHash = window.location.hash || "";
+
+  const hashRaw = String(window.location.hash || "").replace(/^#/, "");
+  if (hashRaw.includes("=")) {
+    const hashParams = new URLSearchParams(hashRaw);
+    if (!token) {
+      token = String(hashParams.get("manager_token") || "").trim();
+    }
+    hashParams.delete("manager_token");
+    const hashClean = hashParams.toString();
+    nextHash = hashClean ? `#${hashClean}` : "";
+  }
+
+  if (!token) return;
+
+  state.managerApiToken = token;
+  saveStoredManagerToken(token);
+  searchParams.delete("manager_token");
+  const nextSearch = searchParams.toString();
+  const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}${nextHash}`;
+  window.history.replaceState({}, "", nextUrl);
+}
+
+function buildManagerAuthHeaders(inputHeaders = {}) {
+  const headers = { ...(inputHeaders || {}) };
+  if (state.managerApiToken) {
+    headers["X-Token-Workshed-Manager-Token"] = state.managerApiToken;
+  }
+  return headers;
+}
+
+async function managerFetch(input, init = {}) {
+  const nextInit = { ...(init || {}) };
+  nextInit.headers = buildManagerAuthHeaders(init.headers || {});
+  return fetch(input, nextInit);
+}
+
+async function warmupOpenClawRuntime(options = {}) {
+  const silent = options && options.silent === true;
+  if (state.openclawWarmupInFlight) return;
+  const modelHint = String((
+    state.selectedModel
+    || (modelSelect && typeof modelSelect.value === "string" ? modelSelect.value.trim() : "")
+  ) || "").trim();
+  if (!modelHint) return;
+
+  const requestServerUrl = resolveChatServerUrl(modelHint);
+  state.openclawWarmupInFlight = true;
+  try {
+    const response = await fetch("/api/openclaw/warmup", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        server_url: requestServerUrl,
+        model: modelHint,
+      }),
+    });
+    let data = null;
+    try {
+      data = await response.json();
+    } catch {
+      data = null;
+    }
+
+    if (!response.ok || !data || data.ok !== true) {
+      const detail = data && (data.detail || data.error || data.message)
+        ? String(data.detail || data.error || data.message)
+        : `Warmup failed (${response.status})`;
+      throw new Error(detail);
+    }
+
+    state.openclawWarmupLastAt = Date.now();
+    state.openclawWarmupModel = modelHint;
+    state.openclawWarmupServerUrl = requestServerUrl;
+    if (!silent) {
+      if (data.started) {
+        showToast("OpenClaw warming up Node runtime...", 1500);
+      } else if (data.status && data.status.state === "running") {
+        showToast("OpenClaw warmup already running.", 1200);
+      }
+    }
+  } catch (error) {
+    if (!silent) {
+      const message = error instanceof Error ? error.message : String(error);
+      showToast(`OpenClaw warmup failed: ${message}`, 2600);
+    }
+  } finally {
+    state.openclawWarmupInFlight = false;
+  }
+}
+
+function getAgentProbeCacheKey({ serverUrl, modelId, runtime }) {
+  const normalizedServer = normalizeServerUrl(serverUrl || state.settings.server_url || "");
+  const normalizedModel = String(modelId || "").trim().toLowerCase();
+  const normalizedRuntime = String(runtime || "").trim().toLowerCase() === "hermes" ? "hermes" : "openclaw";
+  const configVersion = "bridge-v1";
+  return `${normalizedRuntime}|${normalizedServer}|${normalizedModel}|${configVersion}`;
+}
+
+async function probeAgentRuntimeCompatibility({
+  serverUrl,
+  modelId,
+  runtime,
+  force = false,
+}) {
+  const runtimeName = String(runtime || "").trim().toLowerCase() === "hermes" ? "hermes" : "openclaw";
+  const selectedModel = String(modelId || "").trim();
+  if (!selectedModel) {
+    return { ok: false, reason: "No model selected for agent probe." };
+  }
+  const targetServerUrl = normalizeServerUrl(serverUrl || state.settings.server_url || "");
+  const cacheKey = getAgentProbeCacheKey({
+    serverUrl: targetServerUrl,
+    modelId: selectedModel,
+    runtime: runtimeName,
+  });
+  const now = Date.now();
+  const ttlMs = 5 * 60 * 1000;
+  if (!force) {
+    const cached = state.agentProbeCache[cacheKey];
+    if (
+      cached
+      && typeof cached === "object"
+      && Number.isFinite(cached.checkedAt)
+      && (now - Number(cached.checkedAt)) <= ttlMs
+    ) {
+      return {
+        ok: Boolean(cached.ok),
+        reason: String(cached.reason || ""),
+        data: cached.data || null,
+        cached: true,
+      };
+    }
+  }
+
+  const response = await fetch("/api/agent/probe", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      server_url: targetServerUrl,
+      model: selectedModel,
+      runtime: runtimeName,
+      force: Boolean(force),
+    }),
+  });
+
+  let data = null;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
+
+  const ok = Boolean(response.ok && data && data.ok === true && data.agent_ready === true);
+  const reason = data && (data.reason || data.detail || data.error || data.message)
+    ? String(data.reason || data.detail || data.error || data.message)
+    : (ok ? "" : `Agent probe failed (${response.status})`);
+
+  state.agentProbeCache[cacheKey] = {
+    ok,
+    reason,
+    checkedAt: now,
+    data,
+  };
+
+  return {
+    ok,
+    reason,
+    data,
+    cached: Boolean(data && data.cached),
+  };
+}
+
+function getAgentRuntimeBlockKey({
+  runtime,
+  serverUrl,
+  modelId,
+}) {
+  const runtimeName = String(runtime || "").trim().toLowerCase() === "hermes" ? "hermes" : "openclaw";
+  const normalizedModel = String(modelId || "").trim().toLowerCase();
+  const normalizedServer = normalizeServerUrl(serverUrl || state.settings.server_url || "");
+  return `${runtimeName}|${normalizedServer}|${normalizedModel}`;
+}
+
+function setAgentRuntimeBlocked({
+  runtime,
+  serverUrl,
+  modelId,
+  reason,
+}) {
+  const key = getAgentRuntimeBlockKey({ runtime, serverUrl, modelId });
+  state.agentRuntimeBlocklist[key] = {
+    reason: String(reason || "").trim(),
+    blockedAt: Date.now(),
+  };
+}
+
+function clearAgentRuntimeBlocked({
+  runtime,
+  serverUrl,
+  modelId,
+}) {
+  const key = getAgentRuntimeBlockKey({ runtime, serverUrl, modelId });
+  if (Object.prototype.hasOwnProperty.call(state.agentRuntimeBlocklist, key)) {
+    delete state.agentRuntimeBlocklist[key];
+  }
+}
+
+function getAgentRuntimeBlockedReason({
+  runtime,
+  serverUrl,
+  modelId,
+}) {
+  const key = getAgentRuntimeBlockKey({ runtime, serverUrl, modelId });
+  const entry = state.agentRuntimeBlocklist[key];
+  if (!entry || typeof entry !== "object") return "";
+  return String(entry.reason || "").trim();
+}
+
+function applyAgentRuntimeAvailability() {
+  const modelId = String(state.selectedModel || "").trim();
+  if (!modelId) {
+    return;
+  }
+  const runtimeServerUrl = resolveChatServerUrl(modelId);
+  const interactionLocked = Boolean(state.sending || state.clearingChat || state.switchingModel);
+  const openclawBlockedReason = getAgentRuntimeBlockedReason({
+    runtime: "openclaw",
+    serverUrl: runtimeServerUrl,
+    modelId,
+  });
+  const hermesBlockedReason = getAgentRuntimeBlockedReason({
+    runtime: "hermes",
+    serverUrl: runtimeServerUrl,
+    modelId,
+  });
+  if (agentModeOpenclawBtn) {
+    agentModeOpenclawBtn.hidden = false;
+    const disabledByModel = Boolean(openclawBlockedReason);
+    agentModeOpenclawBtn.disabled = interactionLocked || disabledByModel;
+    if (disabledByModel) {
+      agentModeOpenclawBtn.setAttribute("title", `OpenClaw unavailable: ${openclawBlockedReason}`);
+      agentModeOpenclawBtn.setAttribute("aria-label", "openclaw unavailable");
+    } else {
+      agentModeOpenclawBtn.setAttribute("title", "openclaw");
+      agentModeOpenclawBtn.setAttribute("aria-label", "openclaw");
+    }
+  }
+  if (agentModeHermesBtn) {
+    const disabledByModel = Boolean(hermesBlockedReason);
+    agentModeHermesBtn.hidden = false;
+    agentModeHermesBtn.disabled = interactionLocked || disabledByModel;
+    if (disabledByModel) {
+      agentModeHermesBtn.setAttribute("title", `Hermes unavailable: ${hermesBlockedReason}`);
+      agentModeHermesBtn.setAttribute("aria-label", "hermes unavailable");
+    } else {
+      agentModeHermesBtn.setAttribute("title", "hermes");
+      agentModeHermesBtn.setAttribute("aria-label", "hermes");
+    }
+  }
+  if (openclawToolProfileSelect) {
+    openclawToolProfileSelect.disabled = interactionLocked;
+  }
+}
+
+function disableAgentModeWithReason(reasonText) {
+  const reason = String(reasonText || "").trim();
+  applyAgentModeButtons("off");
+  state.settings = normalizeSettings({
+    ...state.settings,
+    openclaw_enabled: false,
+    agent_runtime: "auto",
+    agent_mode: "off",
+  });
+  saveStoredSettings();
+  if (reason) {
+    showToast(`Agent mode disabled: ${reason}`, 3600);
+  } else {
+    showToast("Agent mode disabled for this model/runtime.", 2600);
+  }
+  applyAgentRuntimeAvailability();
+}
+
+function getAgentRuntimeLabel(runtime) {
+  return String(runtime || "").trim().toLowerCase() === "hermes" ? "Hermes" : "OpenClaw";
+}
+
+function setAgentRuntimeAvailabilityFromProbe({
+  runtime,
+  serverUrl,
+  modelId,
+  probeResult,
+}) {
+  const ok = Boolean(probeResult && probeResult.ok);
+  if (ok) {
+    clearAgentRuntimeBlocked({ runtime, serverUrl, modelId });
+    return;
+  }
+  const data = probeResult && typeof probeResult === "object" ? (probeResult.data || {}) : {};
+  const failureList = Array.isArray(data && data.failures) ? data.failures : [];
+  const firstFailure = failureList.find((item) => String(item || "").trim()) || "";
+  const baseReason = String(probeResult && probeResult.reason ? probeResult.reason : "").trim();
+  const reason = String(firstFailure || baseReason || `${getAgentRuntimeLabel(runtime)} probe failed`).trim();
+  setAgentRuntimeBlocked({
+    runtime,
+    serverUrl,
+    modelId,
+    reason,
+  });
+}
+
+async function refreshAgentRuntimeAvailabilityForModel({
+  modelId,
+  serverUrl,
+  force = false,
+  runtimes = ["openclaw", "hermes"],
+  silent = true,
+}) {
+  const selectedModel = String(modelId || "").trim();
+  if (!selectedModel) return;
+  const targetServerUrl = normalizeServerUrl(serverUrl || resolveChatServerUrl(selectedModel));
+  const runtimeList = Array.isArray(runtimes) && runtimes.length
+    ? runtimes.map((item) => (String(item || "").trim().toLowerCase() === "hermes" ? "hermes" : "openclaw"))
+    : ["openclaw", "hermes"];
+  const uniqueRuntimes = Array.from(new Set(runtimeList));
+
+  const results = await Promise.all(uniqueRuntimes.map(async (runtime) => {
+    try {
+      const probe = await probeAgentRuntimeCompatibility({
+        serverUrl: targetServerUrl,
+        modelId: selectedModel,
+        runtime,
+        force,
+      });
+      return { runtime, probe };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        runtime,
+        probe: {
+          ok: false,
+          reason: message,
+          cached: false,
+          data: null,
+        },
+      };
+    }
+  }));
+
+  results.forEach(({ runtime, probe }) => {
+    setAgentRuntimeAvailabilityFromProbe({
+      runtime,
+      serverUrl: targetServerUrl,
+      modelId: selectedModel,
+      probeResult: probe,
+    });
+  });
+
+  const currentMode = getAgentModeFromSettings(state.settings);
+  if (currentMode === "openclaw" || currentMode === "hermes") {
+    const currentReason = getAgentRuntimeBlockedReason({
+      runtime: currentMode,
+      serverUrl: targetServerUrl,
+      modelId: selectedModel,
+    });
+    if (currentReason) {
+      disableAgentModeWithReason(currentReason);
+    }
+  }
+
+  applyAgentRuntimeAvailability();
+
+  if (!silent) {
+    const failed = results.filter((item) => !item.probe.ok);
+    if (failed.length) {
+      const runtimeText = failed.map((item) => getAgentRuntimeLabel(item.runtime)).join(", ");
+      showToast(`${runtimeText} unavailable for this model.`, 2400);
+    }
+  }
+}
+
+async function pushServerModePreferenceToManager(enabled) {
+  try {
+    await managerFetch("/api/manager/server-mode", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        enabled: Boolean(enabled),
+      }),
+    });
+  } catch {
+    // Manager endpoint is optional in non-desktop mode.
+  }
+}
+
+function normalizeOpenclawToolProfile(value) {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return OPENCLAW_TOOL_PROFILES.has(raw) ? raw : "auto";
+}
+
+function getOpenclawToolProfile(settings) {
+  if (!settings || typeof settings !== "object") {
+    return "auto";
+  }
+  return normalizeOpenclawToolProfile(settings.openclaw_tool_profile);
+}
+
+function buildAgentRuntimeRequestFields({ enabled, runtime }) {
+  const modeEnabled = Boolean(enabled);
+  const fields = {
+    openclaw_enabled: modeEnabled,
+    cypherclaw_enabled: modeEnabled,
+    agent_runtime: modeEnabled ? (runtime === "hermes" ? "hermes" : "openclaw") : "auto",
+  };
+  if (modeEnabled && getOpenclawToolProfile(state.settings) === "full") {
+    fields.tool_mode = "full";
+  }
+  return fields;
+}
+
 function normalizeSettings(input) {
   const maxTokens = Number.parseInt(String(input.max_tokens ?? state.defaults.max_tokens), 10);
   const temperature = Number.parseFloat(String(input.temperature ?? state.defaults.temperature));
+  let openclawEnabled = Boolean(
+    input.openclaw_enabled
+    || input.cypherclaw_enabled,
+  );
+  let agentRuntime = "auto";
+  const modeRaw = typeof input.agent_mode === "string"
+    ? input.agent_mode.trim().toLowerCase()
+    : "";
+  const runtimeRaw = typeof input.agent_runtime === "string"
+    ? input.agent_runtime.trim().toLowerCase()
+    : "";
+
+  if (modeRaw === "openclaw" || modeRaw === "hermes") {
+    openclawEnabled = true;
+    agentRuntime = modeRaw;
+  } else if (modeRaw === "off") {
+    openclawEnabled = false;
+    agentRuntime = "auto";
+  } else if (runtimeRaw === "openclaw" || runtimeRaw === "hermes") {
+    agentRuntime = runtimeRaw;
+  }
+  const chatDispatchRaw = typeof input.chat_dispatch_mode === "string"
+    ? input.chat_dispatch_mode.trim().toLowerCase()
+    : "";
+  const chatDispatchMode = CHAT_DISPATCH_MODES.has(chatDispatchRaw) ? chatDispatchRaw : "single";
+  const toolProfileRaw = (typeof input.openclaw_tool_profile === "string")
+    ? input.openclaw_tool_profile
+    : input.openclawToolProfile;
+  const openclawToolProfile = normalizeOpenclawToolProfile(toolProfileRaw);
 
   return {
     server_url: normalizeServerUrl(input.server_url ?? state.defaults.server_url),
     max_tokens: Number.isFinite(maxTokens) ? clamp(maxTokens, 1, 16384) : state.defaults.max_tokens,
     temperature: Number.isFinite(temperature) ? clamp(temperature, 0, 2) : state.defaults.temperature,
     system_prompt: (input.system_prompt || "").trim(),
+    server_mode_enabled: true,
+    openclaw_enabled: openclawEnabled,
+    agent_runtime: agentRuntime,
+    openclaw_tool_profile: openclawToolProfile,
+    chat_dispatch_mode: chatDispatchMode,
   };
+}
+
+function getAgentModeFromSettings(settings) {
+  if (!settings || !settings.openclaw_enabled) return "off";
+  return settings.agent_runtime === "hermes" ? "hermes" : "openclaw";
+}
+
+function applyAgentModeButtons(mode) {
+  const normalizedMode = mode === "hermes" ? "hermes" : (mode === "openclaw" ? "openclaw" : "off");
+  if (agentModeOpenclawBtn) {
+    const active = normalizedMode === "openclaw";
+    agentModeOpenclawBtn.classList.toggle("active", active);
+    agentModeOpenclawBtn.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+  if (agentModeHermesBtn) {
+    const active = normalizedMode === "hermes";
+    agentModeHermesBtn.classList.toggle("active", active);
+    agentModeHermesBtn.setAttribute("aria-pressed", active ? "true" : "false");
+  }
+  applyAgentRuntimeAvailability();
+}
+
+function getAgentModeFromButtons() {
+  const openclawPressed = agentModeOpenclawBtn
+    && agentModeOpenclawBtn.getAttribute("aria-pressed") === "true";
+  const hermesPressed = agentModeHermesBtn
+    && agentModeHermesBtn.getAttribute("aria-pressed") === "true";
+  if (hermesPressed) return "hermes";
+  if (openclawPressed) return "openclaw";
+  return "off";
 }
 
 function loadStoredSettings() {
@@ -944,6 +2130,12 @@ function sanitizeStoredMessages(input) {
     const entry = { role, content };
     if (role === "assistant" && item.thinking_complete === true) {
       entry.thinking_complete = true;
+    }
+    if (role === "assistant") {
+      const thinkingSeconds = Number(item.thinking_seconds);
+      if (Number.isFinite(thinkingSeconds) && thinkingSeconds >= 0) {
+        entry.thinking_seconds = thinkingSeconds;
+      }
     }
 
     out.push(entry);
@@ -1148,6 +2340,30 @@ function scheduleConversationTitleRefresh(conversationId, options = {}) {
   }, delayMs);
 }
 
+function isEligibleAssistantMessageForAutoTitle(message) {
+  if (!message || message.role !== "assistant") return false;
+  const raw = String(message.content || "").trim();
+  if (!raw) return false;
+  if (raw === EMPTY_RESPONSE_SENTINEL) return false;
+  if (/^\[error\]/i.test(raw)) return false;
+  return true;
+}
+
+function maybeScheduleConversationTitleRefresh(conversationId, latestMessage = null) {
+  const id = String(conversationId || "").trim();
+  if (!id) return;
+  if (latestMessage && !isEligibleAssistantMessageForAutoTitle(latestMessage)) return;
+
+  const conv = state.conversations.find((item) => item.id === id);
+  if (!conv || conv.auto_title === false) return;
+
+  const safeMessages = sanitizeStoredMessages(conv.messages);
+  const assistantTurns = safeMessages.filter((item) => isEligibleAssistantMessageForAutoTitle(item)).length;
+  if (!(assistantTurns === 1 || (assistantTurns > 1 && (assistantTurns - 1) % 5 === 0))) return;
+
+  scheduleConversationTitleRefresh(id, { delayMs: 650 });
+}
+
 function buildConversation(messages = [], options = {}) {
   const now = Date.now();
   const safeMessages = sanitizeStoredMessages(messages);
@@ -1209,10 +2425,15 @@ function syncActiveConversationFromState(options = {}) {
   const conv = ensureActiveConversation();
   conv.messages = trimMessagesForStorage(sanitizeStoredMessages(state.messages));
   if (conv.auto_title !== false) {
-    conv.title = normalizeConversationTitle(
-      deriveConversationTitle(conv.messages),
-      t("New Conversation"),
-    );
+    const hasAssistant = conv.messages.some((item) => item && item.role === "assistant");
+    const currentTitle = normalizeConversationTitle(String(conv.title || ""), "");
+    const isUntitled = !currentTitle || currentTitle === normalizeConversationTitle(t("New Conversation"), "");
+    if (!hasAssistant || isUntitled) {
+      conv.title = normalizeConversationTitle(
+        deriveConversationTitle(conv.messages),
+        t("New Conversation"),
+      );
+    }
   }
   if (touchUpdated) {
     conv.updated_at = Date.now();
@@ -1402,15 +2623,14 @@ function saveStoredMessages() {
       CHAT_MEMORY_KEY,
       JSON.stringify(trimMessagesForStorage(sanitizeStoredMessages(state.messages))),
     );
-    localStorage.removeItem(CHAT_SESSIONS_KEY);
-    localStorage.removeItem(CHAT_ACTIVE_ID_KEY);
   } catch {
     // Ignore storage errors.
   }
 }
 
 function persistCurrentConversationSnapshot() {
-  saveStoredMessages();
+  syncActiveConversationFromState({ touchUpdated: false });
+  persistConversations();
 }
 
 function clearStoredMessages() {
@@ -1460,6 +2680,12 @@ function setModelPrefForServer(serverUrl, modelId) {
   saveModelPrefMap(prefMap);
 }
 
+function isHiddenUtilityModel(modelId) {
+  const normalized = String(modelId || "").trim().toLowerCase();
+  if (!normalized) return false;
+  return HIDDEN_UTILITY_MODELS.has(normalized);
+}
+
 function normalizeModelList(modelsInput) {
   if (!Array.isArray(modelsInput)) return [];
 
@@ -1468,7 +2694,7 @@ function normalizeModelList(modelsInput) {
   for (const item of modelsInput) {
     if (typeof item !== "string") continue;
     const value = item.trim();
-    if (!value || seen.has(value)) continue;
+    if (!value || seen.has(value) || isHiddenUtilityModel(value)) continue;
     seen.add(value);
     models.push(value);
   }
@@ -1476,10 +2702,69 @@ function normalizeModelList(modelsInput) {
   return models;
 }
 
+function inferModelSizeLabel(modelId) {
+  const raw = String(modelId || "").trim();
+  if (!raw) return "-";
+
+  const sizeMatches = Array.from(raw.matchAll(new RegExp(OPENCLAW_SIZE_TOKEN_RE.source, "ig")));
+  if (sizeMatches.length > 0) {
+    const picked = sizeMatches[sizeMatches.length - 1];
+    return `${picked[1]}${String(picked[2] || "").toUpperCase()}`;
+  }
+
+  const wordMatches = Array.from(raw.matchAll(new RegExp(OPENCLAW_SIZE_WORD_RE.source, "ig")));
+  if (wordMatches.length > 0) {
+    const picked = wordMatches[wordMatches.length - 1];
+    return String(picked[1] || "").toLowerCase() || "-";
+  }
+
+  return "-";
+}
+
+function isProbablySmallOpenClawModel(modelId, sizeLabel) {
+  const normalized = String(modelId || "").trim().toLowerCase();
+  if (!normalized) return false;
+  if (OPENCLAW_SMALL_MODEL_HINT_RE.test(normalized)) return true;
+
+  const normalizedSize = String(sizeLabel || "").trim().toUpperCase();
+  if (!normalizedSize || normalizedSize === "-") return false;
+  if (normalizedSize.endsWith("M") || normalizedSize.endsWith("K")) return true;
+
+  if (normalizedSize.endsWith("B")) {
+    const sizeB = Number.parseFloat(normalizedSize.slice(0, -1));
+    if (Number.isFinite(sizeB) && sizeB < 7.0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function inferOpenClawRecommended(modelId, deepThinking) {
+  const normalized = String(modelId || "").trim().toLowerCase();
+  if (!normalized) return false;
+
+  const sizeLabel = inferModelSizeLabel(normalized);
+  if (isProbablySmallOpenClawModel(normalized, sizeLabel)) return false;
+  if (OPENCLAW_LOW_QUALITY_QUANT_RE.test(normalized)) return false;
+  if (deepThinking === true) return true;
+  return normalized.includes("reasoner") || normalized.includes("r1") || normalized.includes("thinking");
+}
+
+function inferOpenClawSupported(modelId) {
+  const normalized = String(modelId || "").trim().toLowerCase();
+  if (!normalized) return false;
+  return OPENCLAW_SUPPORTED_MODEL_RE.test(normalized);
+}
+
 function inferModelCapability(modelId) {
   const normalized = String(modelId || "").trim().toLowerCase();
   if (!normalized) {
-    return { deepThinking: false, reasoningParser: null };
+    return {
+      deepThinking: false,
+      reasoningParser: null,
+      openclawSupported: false,
+      openclawRecommended: false,
+    };
   }
 
   let reasoningParser = null;
@@ -1498,10 +2783,14 @@ function inferModelCapability(modelId) {
     normalized.includes("nemotron") ||
     normalized.includes("reasoner") ||
     normalized.includes("thinking");
+  const openclawSupported = inferOpenClawSupported(normalized);
+  const openclawRecommended = inferOpenClawRecommended(normalized, deepThinking);
 
   return {
     deepThinking,
     reasoningParser,
+    openclawSupported,
+    openclawRecommended,
   };
 }
 
@@ -1524,20 +2813,42 @@ function normalizeModelCapabilities(models, capabilitiesInput) {
     const deepThinking = typeof raw.deep_thinking === "boolean"
       ? raw.deep_thinking
       : inferred.deepThinking || Boolean(parser);
+    const openclawRecommended = typeof raw.openclaw_recommended === "boolean"
+      ? raw.openclaw_recommended
+      : (
+        typeof raw.openclaw_supported === "boolean"
+          ? raw.openclaw_supported
+          : inferred.openclawRecommended
+      );
+    const openclawSupported = typeof raw.openclaw_supported === "boolean"
+      ? raw.openclaw_supported
+      : inferred.openclawSupported;
 
     out[modelId] = {
       deepThinking: deepThinking || Boolean(parser),
       reasoningParser: parser || null,
+      openclawSupported: Boolean(openclawSupported),
+      openclawRecommended: Boolean(openclawRecommended),
     };
   });
 
   return out;
 }
 
+function isOpenClawSupportedModel(modelId) {
+  const capability = getModelCapability(modelId);
+  return Boolean(capability.openclawSupported);
+}
+
 function getModelCapability(modelId) {
   const key = String(modelId || "").trim();
   if (!key) {
-    return { deepThinking: false, reasoningParser: null };
+    return {
+      deepThinking: false,
+      reasoningParser: null,
+      openclawSupported: false,
+      openclawRecommended: false,
+    };
   }
   if (state.modelCapabilities[key]) {
     return state.modelCapabilities[key];
@@ -1607,6 +2918,14 @@ function fileToDataUrl(file) {
   });
 }
 
+function updateMediaActionButton() {
+  if (!btnAttachMedia) return;
+  const hasMedia = Array.isArray(state.pendingMedia) && state.pendingMedia.length > 0;
+  const label = hasMedia ? "Clear Media" : "Attach Media";
+  btnAttachMedia.title = label;
+  btnAttachMedia.setAttribute("aria-label", label);
+}
+
 function renderPendingMedia() {
   if (!mediaPreview) return;
 
@@ -1616,6 +2935,7 @@ function renderPendingMedia() {
     empty.className = "media-empty";
     empty.textContent = "No media attached.";
     mediaPreview.appendChild(empty);
+    updateMediaActionButton();
     if (btnClearMedia) btnClearMedia.disabled = true;
     return;
   }
@@ -1669,6 +2989,7 @@ function renderPendingMedia() {
     mediaPreview.appendChild(chip);
   });
 
+  updateMediaActionButton();
   if (btnClearMedia) btnClearMedia.disabled = false;
 }
 
@@ -1726,7 +3047,7 @@ async function refreshManagerRuntimeConfig(options = {}) {
   state.modelRuntime.loading = true;
 
   try {
-    const response = await fetch("/api/manager/runtime-config");
+    const response = await managerFetch("/api/manager/runtime-config");
     if (!response.ok) {
       state.modelRuntime.available = false;
       if (!silent && modelsHint) {
@@ -1880,7 +3201,13 @@ function renderModelsList() {
 
     const main = document.createElement("div");
     main.className = "models-list-main";
-    main.textContent = modelId;
+    const titleRow = document.createElement("div");
+    titleRow.className = "models-list-title-row";
+    const modelIdText = document.createElement("span");
+    modelIdText.className = "models-list-model-id";
+    modelIdText.textContent = modelId;
+    titleRow.appendChild(modelIdText);
+    main.appendChild(titleRow);
     row.appendChild(main);
 
     const sub = document.createElement("div");
@@ -1921,13 +3248,18 @@ function applyIntegrityReport(report, options = {}) {
   state.modelIntegrityReport = report;
 
   const removed = Array.isArray(report.removed) ? report.removed : [];
+  const pending = Array.isArray(report.pending) ? report.pending : [];
   const errors = Array.isArray(report.errors) ? report.errors : [];
   const checked = Boolean(report.checked);
+  const requiresConfirmation = Boolean(report.requires_confirmation);
 
   if (modelsDeleteHint) {
     if (removed.length > 0) {
       modelsDeleteHint.textContent =
         `Startup integrity check removed ${removed.length} incomplete model cache entr${removed.length > 1 ? "ies" : "y"}.`;
+    } else if (requiresConfirmation && pending.length > 0) {
+      modelsDeleteHint.textContent =
+        `Integrity check found ${pending.length} incomplete cache entr${pending.length > 1 ? "ies" : "y"} pending confirmed cleanup.`;
     } else if (errors.length > 0) {
       modelsDeleteHint.textContent =
         `Integrity check finished with ${errors.length} warning${errors.length > 1 ? "s" : ""}.`;
@@ -1946,6 +3278,15 @@ function applyIntegrityReport(report, options = {}) {
       state.modelIntegrityNoticeKey = key;
       showToast(
         `Integrity check removed ${removed.length} incomplete model cache entr${removed.length > 1 ? "ies" : "y"}.`,
+        2800,
+      );
+    }
+  } else if (!silent && requiresConfirmation && pending.length > 0) {
+    const key = `pending:${pending.length}:${String(report.checked_at || "")}`;
+    if (state.modelIntegrityNoticeKey !== key) {
+      state.modelIntegrityNoticeKey = key;
+      showToast(
+        `Integrity check found ${pending.length} incomplete cache entr${pending.length > 1 ? "ies" : "y"}.`,
         2800,
       );
     }
@@ -1992,6 +3333,7 @@ function buildVariantOptionLabel(variant) {
   const param = getVariantParamLabel(variant);
   const size = getVariantSizeLabel(variant);
   const quant = getVariantQuantLabel(variant);
+  const modelId = String(variant && variant.id ? variant.id : "").trim();
 
   const parts = [];
   if (param !== "-") {
@@ -2003,15 +3345,17 @@ function buildVariantOptionLabel(variant) {
     parts.push(quant);
   }
 
-  const title = String(variant && variant.id ? variant.id : "").trim();
+  const title = modelId;
   const tail = title ? (title.split("/").pop() || title) : "";
   if (!parts.length) {
-    return tail || "default";
+    const base = tail || "default";
+    return base;
   }
   if (tail && parts.every((p) => !tail.toLowerCase().includes(String(p).toLowerCase()))) {
     parts.push(tail);
   }
-  return parts.join(" · ");
+  const base = parts.join(" · ");
+  return base;
 }
 
 function inferFamilyDisplayName(modelId) {
@@ -2037,6 +3381,12 @@ function buildCommunityGroups(items) {
   source.forEach((item) => {
     const modelId = String(item && item.id ? item.id : "").trim();
     if (!modelId) return;
+    const openclawSupported = typeof item.openclaw_supported === "boolean"
+      ? item.openclaw_supported
+      : inferOpenClawSupported(modelId);
+    const openclawRecommended = typeof item.openclaw_recommended === "boolean"
+      ? item.openclaw_recommended
+      : false;
     const familyKey = String(item.family_key || modelId).trim() || modelId;
     const existing = groups.get(familyKey);
     if (existing) {
@@ -2050,6 +3400,16 @@ function buildCommunityGroups(items) {
       existing.local = existing.local || Boolean(item.local);
       existing.gated = existing.gated || Boolean(item.gated);
       existing.deep_thinking = existing.deep_thinking || Boolean(item.deep_thinking);
+      existing.openclaw_supported = existing.openclaw_supported || Boolean(openclawSupported);
+      existing.openclaw_recommended = existing.openclaw_recommended || Boolean(openclawRecommended);
+      existing.source_priority = Math.max(
+        Number(existing.source_priority || 0),
+        Number(item.source_priority || (item.local ? 3 : 1)),
+      );
+      existing.query_score = Math.max(
+        Number(existing.query_score || 0),
+        Number(item.query_score || 0),
+      );
       return;
     }
 
@@ -2065,6 +3425,10 @@ function buildCommunityGroups(items) {
       local: Boolean(item.local),
       gated: Boolean(item.gated),
       deep_thinking: Boolean(item.deep_thinking),
+      openclaw_supported: Boolean(openclawSupported),
+      openclaw_recommended: Boolean(openclawRecommended),
+      source_priority: Number(item.source_priority || (item.local ? 3 : 1)),
+      query_score: Number(item.query_score || 0),
       variants: [item],
     });
   });
@@ -2080,6 +3444,16 @@ function buildCommunityGroups(items) {
   });
 
   grouped.sort((a, b) => {
+    const bySource = Number(b.source_priority || 0) - Number(a.source_priority || 0);
+    if (bySource !== 0) return bySource;
+    if (state.community.openclawMode) {
+      const byOpenClawSupported = Number(b.openclaw_supported) - Number(a.openclaw_supported);
+      if (byOpenClawSupported !== 0) return byOpenClawSupported;
+      const byOpenClawRecommended = Number(b.openclaw_recommended) - Number(a.openclaw_recommended);
+      if (byOpenClawRecommended !== 0) return byOpenClawRecommended;
+    }
+    const byQuery = Number(b.query_score || 0) - Number(a.query_score || 0);
+    if (byQuery !== 0) return byQuery;
     const byDownloads = Number(b.downloads || 0) - Number(a.downloads || 0);
     if (byDownloads !== 0) return byDownloads;
     return String(a.display_name || "").localeCompare(String(b.display_name || ""));
@@ -2091,6 +3465,18 @@ function buildCommunityGroups(items) {
 function pickCommunityVariant(group) {
   const variants = Array.isArray(group.variants) ? group.variants : [];
   if (!variants.length) return null;
+  const isSupported = (variant) => {
+    if (!variant || typeof variant !== "object") return false;
+    if (variant.openclaw_supported === true || variant.openclaw_recommended === true) return true;
+    return inferOpenClawSupported(String(variant.id || ""));
+  };
+
+  if (state.community.openclawMode) {
+    const cypherLocal = variants.find(
+      (v) => v.local === true && isSupported(v),
+    );
+    if (cypherLocal) return cypherLocal;
+  }
 
   const pref = state.community.sizePrefByFamily[group.family_key];
   if (pref) {
@@ -2103,6 +3489,11 @@ function pickCommunityVariant(group) {
 
   const local = variants.find((v) => v.local === true);
   if (local) return local;
+
+  if (state.community.openclawMode) {
+    const cypherAny = variants.find((v) => isSupported(v));
+    if (cypherAny) return cypherAny;
+  }
 
   return variants[0];
 }
@@ -2145,6 +3536,9 @@ function setCommunityJobActionButtons(job) {
   if (!state.managerEnabled || state.sending || state.clearingChat || state.switchingModel) {
     return;
   }
+  if (state.community.jobActionInFlight) {
+    return;
+  }
   if (!job || job.done === true) {
     return;
   }
@@ -2157,7 +3551,12 @@ function setCommunityJobActionButtons(job) {
     btnCommunityResume.disabled = status !== "paused";
   }
   if (btnCommunityCancel) {
-    btnCommunityCancel.disabled = !(status === "queued" || status === "downloading" || status === "paused");
+    btnCommunityCancel.disabled = !(
+      status === "queued"
+      || status === "downloading"
+      || status === "paused"
+      || status === "deploying"
+    ) || status === "canceling";
   }
 }
 
@@ -2211,6 +3610,7 @@ function renderCommunityJob(job) {
     status === "queued" ||
     status === "downloading" ||
     status === "paused" ||
+    status === "canceling" ||
     status === "deploying" ||
     status === "completed" ||
     (downloadedBytes > 0 || totalBytes > 0);
@@ -2270,10 +3670,13 @@ function renderCommunityResults() {
     head.className = "community-card-head";
     head.appendChild(createCommunityBrandNode(group));
 
+    const titleRow = document.createElement("div");
+    titleRow.className = "community-model-title-row";
     const idNode = document.createElement("div");
     idNode.className = "community-model-id";
     idNode.textContent = String(group.display_name || selectedVariant.id || "");
-    head.appendChild(idNode);
+    titleRow.appendChild(idNode);
+    head.appendChild(titleRow);
     card.appendChild(head);
 
     const metrics = document.createElement("div");
@@ -2301,13 +3704,6 @@ function renderCommunityResults() {
       localChip.className = "community-chip";
       localChip.textContent = t("Local");
       metrics.appendChild(localChip);
-    }
-
-    if (group.deep_thinking === true) {
-      const deepChip = document.createElement("div");
-      deepChip.className = "community-chip";
-      deepChip.textContent = t("Deep");
-      metrics.appendChild(deepChip);
     }
 
     if (group.gated === true) {
@@ -2398,7 +3794,7 @@ function renderCommunityResults() {
 async function refreshCommunityJobStatus(options = {}) {
   const silent = Boolean(options.silent);
   try {
-    const response = await fetch("/api/manager/community/job");
+    const response = await managerFetch("/api/manager/community/job");
     if (!response.ok) {
       if (!silent && communityHint) {
         communityHint.textContent =
@@ -2421,6 +3817,8 @@ async function refreshCommunityJobStatus(options = {}) {
         communityHint.textContent = `${t("Downloading")} ${model} ${t("and preparing deployment...")}`;
       } else if (status === "paused") {
         communityHint.textContent = `Paused: ${model}`;
+      } else if (status === "canceling") {
+        communityHint.textContent = `Canceling: ${model}`;
       } else if (status === "deploying") {
         communityHint.textContent = `Deploying: ${model}`;
       } else if (status === "completed") {
@@ -2479,7 +3877,7 @@ async function searchCommunityModels(options = {}) {
     const params = new URLSearchParams();
     params.set("q", query);
     params.set("limit", "60");
-    const response = await fetch(`/api/manager/community/search?${params.toString()}`);
+    const response = await managerFetch(`/api/manager/community/search?${params.toString()}`);
     const data = await response.json();
 
     if (!response.ok || !data || data.ok !== true || !Array.isArray(data.results)) {
@@ -2516,6 +3914,58 @@ async function searchCommunityModels(options = {}) {
   }
 }
 
+async function switchCommunityLocalModel(modelId) {
+  const model = String(modelId || "").trim();
+  if (!model) return false;
+  if (!state.managerEnabled) {
+    showToast("Desktop manager mode is required for model switching.", 2200);
+    return false;
+  }
+  if (state.sending || state.clearingChat || state.switchingModel) {
+    return false;
+  }
+  if (state.activeModel === model) {
+    showToast(t("Active"), 1200);
+    return true;
+  }
+
+  const switched = await switchManagedModel(model);
+  if (!switched) {
+    return false;
+  }
+  state.selectedModel = model;
+  applyModelSelectValue(model);
+  await refreshStatus({ silent: true });
+  showToast(`Model switched: ${model}`, 1600);
+  return true;
+}
+
+async function toggleCommunityExtraModel(modelId) {
+  const model = String(modelId || "").trim();
+  if (!model) return false;
+  if (!state.managerEnabled) {
+    showToast("Desktop manager mode is required for concurrent models.", 2200);
+    return false;
+  }
+  if (state.sending || state.clearingChat || state.switchingModel || state.concurrentApplying) {
+    return false;
+  }
+
+  const primaryModel = getPrimaryRunningModel();
+  if (primaryModel && primaryModel === model) {
+    showToast("Primary model is already running.", 1700);
+    return false;
+  }
+
+  const selected = new Set(normalizeModelList(state.concurrentModels));
+  if (selected.has(model)) {
+    selected.delete(model);
+  } else {
+    selected.add(model);
+  }
+  return applyConcurrentModelsSelection(Array.from(selected));
+}
+
 async function controlCommunityJob(action) {
   const normalized = String(action || "").trim().toLowerCase();
   if (!normalized) return;
@@ -2523,9 +3973,26 @@ async function controlCommunityJob(action) {
     showToast("Desktop manager mode is required for this action.", 2000);
     return;
   }
+  if (state.community.jobActionInFlight) return;
+  state.community.jobActionInFlight = true;
 
   try {
-    const response = await fetch("/api/manager/community/job/action", {
+    if (normalized === "cancel" && state.community.currentJob && state.community.currentJob.done !== true) {
+      const model = String(state.community.currentJob.model || "model");
+      const status = String(state.community.currentJob.status || "").trim().toLowerCase();
+      if (status !== "canceled" && status !== "canceling" && status !== "completed" && status !== "failed") {
+        state.community.currentJob = {
+          ...state.community.currentJob,
+          status: "canceling",
+          message: `Canceling download for ${model}...`,
+          done: false,
+          progress_eta_seconds: null,
+        };
+        renderCommunityJob(state.community.currentJob);
+      }
+    }
+
+    const response = await managerFetch("/api/manager/community/job/action", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -2548,6 +4015,10 @@ async function controlCommunityJob(action) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     showToast(`Job action failed: ${message}`, 2600);
+    await refreshCommunityJobStatus({ silent: true });
+  } finally {
+    state.community.jobActionInFlight = false;
+    renderCommunityJob(state.community.currentJob);
   }
 }
 
@@ -2571,7 +4042,7 @@ async function startCommunityDownloadDeploy(modelId, options = {}) {
   }
 
   try {
-    const response = await fetch("/api/manager/community/download-deploy", {
+    const response = await managerFetch("/api/manager/community/download-deploy", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -2608,44 +4079,59 @@ async function ensureCommunityInitialized() {
 }
 
 function formatModelOptionLabel(modelId) {
-  const capability = getModelCapability(modelId);
-  if (capability.deepThinking) {
-    return `${modelId} [Deep]`;
+  return String(modelId || "");
+}
+
+function applyModelSelectValue(modelId) {
+  const value = String(modelId || "").trim();
+  if (modelSelect && value && modelSelect.value !== value) {
+    modelSelect.value = value;
   }
-  return modelId;
+  if (composerModelSelect && value && composerModelSelect.value !== value) {
+    composerModelSelect.value = value;
+  }
+}
+
+function setSingleModelSelectOptions(selectEl, models, selectedModel, disabled = false) {
+  if (!selectEl) return;
+  const safeModels = normalizeModelList(models);
+  selectEl.innerHTML = "";
+  safeModels.forEach((modelId) => {
+    const option = document.createElement("option");
+    option.value = modelId;
+    option.textContent = formatModelOptionLabel(modelId);
+    selectEl.appendChild(option);
+  });
+
+  const fallback = safeModels[0] || "default";
+  const nextModel = safeModels.includes(selectedModel) ? selectedModel : fallback;
+  selectEl.value = nextModel;
+  selectEl.disabled = disabled;
 }
 
 function setModelSelectOptions(models, selectedModel, disabled = false) {
-  if (!modelSelect) return;
-
   const safeModels = normalizeModelList(models);
   if (!safeModels.length) {
     setModelSelectLoading("(No local model)");
     return;
   }
-  modelSelect.innerHTML = "";
-
-  safeModels.forEach((modelId) => {
-    const option = document.createElement("option");
-    option.value = modelId;
-    option.textContent = formatModelOptionLabel(modelId);
-    modelSelect.appendChild(option);
-  });
 
   const fallback = safeModels[0] || "default";
   const nextModel = safeModels.includes(selectedModel) ? selectedModel : fallback;
-  modelSelect.value = nextModel;
-  modelSelect.disabled = disabled;
+  setSingleModelSelectOptions(modelSelect, safeModels, nextModel, disabled);
+  setSingleModelSelectOptions(composerModelSelect, safeModels, nextModel, disabled);
 }
 
 function setModelSelectLoading(text = "(Detecting...)") {
-  if (!modelSelect) return;
-  modelSelect.innerHTML = "";
-  const option = document.createElement("option");
-  option.value = "";
-  option.textContent = text;
-  modelSelect.appendChild(option);
-  modelSelect.disabled = true;
+  [modelSelect, composerModelSelect].forEach((selectEl) => {
+    if (!selectEl) return;
+    selectEl.innerHTML = "";
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = text;
+    selectEl.appendChild(option);
+    selectEl.disabled = true;
+  });
 }
 
 function syncSelectedModel(serverUrl, modelsFromServer, defaultModelFromServer, modelCapabilitiesInput = null) {
@@ -2690,7 +4176,7 @@ function syncSelectedModel(serverUrl, modelsFromServer, defaultModelFromServer, 
 
 async function fetchManagerModels() {
   try {
-    const response = await fetch("/api/manager/models");
+    const response = await managerFetch("/api/manager/models");
     if (!response.ok) {
       state.managerEnabled = false;
       return null;
@@ -2713,13 +4199,14 @@ async function switchManagedModel(nextModel) {
   if (!state.managerEnabled || !nextModel) return true;
 
   const previousModel = state.selectedModel;
+  state.modelSwitchVersion = Number(state.modelSwitchVersion || 0) + 1;
   cancelPendingTitleGeneration();
   state.switchingModel = true;
   setSending(state.sending);
   showToast(`Switching to ${nextModel}...`, 1600);
 
   try {
-    const response = await fetch("/api/manager/switch-model", {
+    const response = await managerFetch("/api/manager/switch-model", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -2755,7 +4242,12 @@ async function switchManagedModel(nextModel) {
 
     state.activeModel = activeModel;
     state.selectedModel = activeModel;
+    state.dashboard.lastModel = activeModel;
     setModelPrefForServer(state.settings.server_url, activeModel);
+    applyManagerRoutingData(data);
+    if (!state.activeServerUrl) {
+      state.activeServerUrl = resolveChatServerUrl(activeModel);
+    }
 
     if (data.runtime_config) {
       state.modelRuntime.available = true;
@@ -2763,15 +4255,18 @@ async function switchManagedModel(nextModel) {
       applyRuntimeConfigToInputs();
     }
 
+    renderConcurrentModelsSettings();
     showToast(`Model switched: ${activeModel}`, 1600);
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     state.selectedModel = previousModel;
-    if (modelSelect && previousModel) {
-      modelSelect.value = previousModel;
-    }
-    showToast(`Switch failed: ${message}`, 2600);
+    state.dashboard.lastModel = state.activeModel || previousModel || state.dashboard.lastModel;
+    applyModelSelectValue(previousModel);
+    const toastText = /^\s*switch failed:/i.test(message)
+      ? message
+      : `Switch failed: ${message}`;
+    showToast(toastText, 2600);
     return false;
   } finally {
     state.switchingModel = false;
@@ -2780,19 +4275,56 @@ async function switchManagedModel(nextModel) {
 }
 
 function applySettingsToInputs() {
-  serverUrlInput.value = state.settings.server_url;
-  maxTokensInput.value = String(state.settings.max_tokens);
-  temperatureRange.value = String(state.settings.temperature);
-  temperatureInput.value = state.settings.temperature.toFixed(2);
-  systemPromptInput.value = state.settings.system_prompt;
+  if (serverUrlInput) {
+    serverUrlInput.value = state.settings.server_url;
+  }
+  if (managerTokenInput) {
+    managerTokenInput.value = state.managerApiToken || "";
+  }
+  if (maxTokensInput) {
+    maxTokensInput.value = String(state.settings.max_tokens);
+  }
+  if (temperatureRange) {
+    temperatureRange.value = String(state.settings.temperature);
+  }
+  if (temperatureInput) {
+    temperatureInput.value = state.settings.temperature.toFixed(2);
+  }
+  if (systemPromptInput) {
+    systemPromptInput.value = state.settings.system_prompt;
+  }
+  applyAgentModeButtons(getAgentModeFromSettings(state.settings));
+  if (openclawToolProfileSelect) {
+    openclawToolProfileSelect.value = getOpenclawToolProfile(state.settings);
+  }
+  if (chatDispatchModeSelect) {
+    chatDispatchModeSelect.value = getChatDispatchMode();
+  }
+  renderServerModeToggle();
+  renderServerModeStateHint();
+  renderConcurrentModelsSettings();
 }
 
 function readSettingsFromInputs() {
+  const hasAgentModeButtons = Boolean(agentModeOpenclawBtn || agentModeHermesBtn);
+  const agentMode = hasAgentModeButtons
+    ? getAgentModeFromButtons()
+    : getAgentModeFromSettings(state.settings);
   return normalizeSettings({
-    server_url: serverUrlInput.value,
-    max_tokens: maxTokensInput.value,
-    temperature: temperatureInput.value,
-    system_prompt: systemPromptInput.value,
+    server_url: serverUrlInput ? serverUrlInput.value : state.settings.server_url,
+    max_tokens: maxTokensInput ? maxTokensInput.value : state.settings.max_tokens,
+    temperature: temperatureInput ? temperatureInput.value : state.settings.temperature,
+    system_prompt: systemPromptInput ? systemPromptInput.value : state.settings.system_prompt,
+    server_mode_enabled: isServerModeEnabled(),
+    agent_mode: agentMode,
+    openclaw_enabled: agentMode === "openclaw" || agentMode === "hermes",
+    agent_runtime: agentMode === "hermes" ? "hermes" : (agentMode === "openclaw" ? "openclaw" : "auto"),
+    openclaw_tool_profile: openclawToolProfileSelect
+      ? String(openclawToolProfileSelect.value || "auto")
+      : getOpenclawToolProfile(state.settings),
+    chat_dispatch_mode: chatDispatchModeSelect
+      ? String(chatDispatchModeSelect.value || state.settings.chat_dispatch_mode || "single")
+      : state.settings.chat_dispatch_mode,
   });
 }
 
@@ -2841,6 +4373,8 @@ function moveHoverPillTo(btn) {
   hoverPill.classList.remove(
     "mode-chat",
     "mode-models",
+    "mode-server",
+    "mode-prompt",
     "mode-community",
     "mode-settings",
     "mode-about",
@@ -2915,9 +4449,17 @@ function setPage(page) {
   if (page === "models") {
     renderModelsList();
   }
+  if (page === "server") {
+    renderServerModeToggle();
+    renderServerModeStateHint();
+    renderConcurrentModelsSettings();
+  }
   if (page === "settings") {
     renderLangToggle();
   }
+
+  refreshProximityGlassCards();
+  scheduleProximityGlassUpdate();
 }
 
 function initSidebar() {
@@ -3006,6 +4548,16 @@ function renderEmptyResponseHtml() {
   ].join("");
 }
 
+function renderWaitingResponseHtml() {
+  return [
+    '<span class="empty-ellipsis" aria-label="Generating response">',
+    '<span class="dot dot-1">.</span>',
+    '<span class="dot dot-2">.</span>',
+    '<span class="dot dot-3">.</span>',
+    "</span>",
+  ].join("");
+}
+
 function renderMarkdown(content) {
   const source = escapeHtml(content).replace(/\r\n?/g, "\n");
   const codeBlocks = [];
@@ -3061,6 +4613,51 @@ function renderMessageContent(content) {
   return renderMarkdown(text);
 }
 
+function normalizeCopiedPlainText(rawText) {
+  return String(rawText || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\r\n?/g, "\n");
+}
+
+function getChatSelectionPlainText() {
+  if (!chatFeed) return "";
+  if (!window.getSelection) return "";
+
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount < 1 || selection.isCollapsed) return "";
+
+  const range = selection.getRangeAt(0);
+  const anchorNode = range.commonAncestorContainer;
+  const anchorElement = anchorNode && anchorNode.nodeType === 1
+    ? anchorNode
+    : anchorNode && anchorNode.parentElement;
+  if (!anchorElement || !chatFeed.contains(anchorElement)) return "";
+
+  return normalizeCopiedPlainText(selection.toString());
+}
+
+function bindChatCopyAsPlainText() {
+  if (chatCopyHandlerBound) return;
+  chatCopyHandlerBound = true;
+
+  document.addEventListener("copy", (event) => {
+    const plainText = getChatSelectionPlainText();
+    if (!plainText) return;
+
+    if (event && event.clipboardData) {
+      event.preventDefault();
+      event.clipboardData.setData("text/plain", plainText);
+      return;
+    }
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(plainText).catch(() => {
+        // Ignore clipboard fallback errors.
+      });
+    }
+  });
+}
+
 function sanitizeFinalAnswerText(rawText) {
   let cleaned = String(rawText || "");
   if (!cleaned) return "";
@@ -3075,6 +4672,20 @@ function sanitizeFinalAnswerText(rawText) {
 
   cleaned = cleaned.replace(FINAL_ANSWER_HEADER_RE, "");
   cleaned = cleaned.replace(THINKING_HEADER_RE, "");
+  // Guard against backend placeholder leakage such as
+  // "(empty response)(empty response)" or repeated sentinel text.
+  const placeholderProbe = cleaned
+    .replace(/\r\n/g, "\n")
+    .replace(/\n+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  if (/^(?:\(?empty response\)?\s*)+$/.test(placeholderProbe)) {
+    return "";
+  }
+  if (/^(?:__vllm_mlx_empty_response__\s*)+$/.test(placeholderProbe)) {
+    return "";
+  }
   return cleaned;
 }
 
@@ -3106,12 +4717,54 @@ function extractFinalAnswerFromDone(donePayload) {
   return "";
 }
 
+function synthesizeAnswerFromThinking(thinkingText) {
+  const raw = String(thinkingText || "").trim();
+  if (!raw) return "";
+
+  const normalized = raw.replace(/\r\n/g, "\n");
+  const marker = /(?:^|\n)\s*(?:final answer|answer|最终答案|结论|总结)\s*[:：]\s*([\s\S]+)$/i.exec(normalized);
+  if (marker && marker[1]) {
+    const candidate = sanitizeFinalAnswerText(marker[1]).trim();
+    if (candidate) return candidate;
+  }
+
+  const cleanedLines = normalized
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !/^\[(?:openclaw|cypherclaw|hermes)\]/i.test(line));
+  if (!cleanedLines.length) return "";
+
+  const paragraphs = cleanedLines.join("\n").split(/\n\s*\n+/).map((part) => part.trim()).filter(Boolean);
+  if (!paragraphs.length) return "";
+
+  const rejectProbe = (text) => {
+    const probe = text.toLowerCase();
+    return (
+      probe.includes("let me")
+      || probe.includes("i'll")
+      || probe.includes("i will")
+      || probe.includes("tool was blocked")
+      || probe.includes("using the")
+      || probe.includes("search for information")
+    );
+  };
+
+  let candidate = paragraphs[paragraphs.length - 1] || "";
+  if (rejectProbe(candidate)) {
+    for (let i = paragraphs.length - 2; i >= 0; i -= 1) {
+      if (!rejectProbe(paragraphs[i])) {
+        candidate = paragraphs[i];
+        break;
+      }
+    }
+  }
+
+  candidate = sanitizeFinalAnswerText(candidate).trim();
+  return candidate;
+}
+
 function renderDashboard() {
   const d = state.dashboard;
-
-  if (dashUptime) {
-    dashUptime.textContent = formatDuration(Date.now() - d.startedAt);
-  }
 
   if (dashRequests) {
     dashRequests.textContent = `${d.requestCount} (ok ${d.successCount} / err ${d.errorCount})`;
@@ -3157,11 +4810,18 @@ function renderDashboard() {
   }
 
   if (dashModel) {
-    const capability = getModelCapability(d.lastModel);
-    const deepTag = capability.deepThinking ? " [Deep]" : "";
     const suffix = d.serverOnline === false ? " (offline)" : "";
-    dashModel.textContent = `${d.lastModel || "-"}${deepTag}${suffix}`;
+    dashModel.textContent = `${d.lastModel || "-"}${suffix}`;
   }
+}
+
+function formatThinkingDoneText(secondsRaw) {
+  const seconds = Number(secondsRaw);
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return "thought for 0.0 seconds";
+  }
+  const normalized = Math.max(0.1, Math.round(seconds * 10) / 10);
+  return `thought for ${normalized.toFixed(1)} seconds`;
 }
 
 function renderChat(options = {}) {
@@ -3184,7 +4844,7 @@ function renderChat(options = {}) {
 
       const statusBox = document.createElement("div");
       statusBox.className = "thinking-status-box";
-      statusBox.textContent = "Thinking Completed";
+      statusBox.textContent = formatThinkingDoneText(msg.thinking_seconds);
 
       statusRow.appendChild(statusBox);
       chatFeed.appendChild(statusRow);
@@ -3430,23 +5090,50 @@ function pushMessage(role, content, options = {}) {
   if (role === "assistant" && options.thinkingComplete === true) {
     entry.thinking_complete = true;
   }
+  if (role === "assistant") {
+    const thinkingSeconds = Number(options.thinkingSeconds);
+    if (Number.isFinite(thinkingSeconds) && thinkingSeconds >= 0) {
+      entry.thinking_seconds = thinkingSeconds;
+    }
+  }
   if (Object.prototype.hasOwnProperty.call(options, "apiContent")) {
     entry.api_content = options.apiContent;
   }
   state.messages.push(entry);
-  saveStoredMessages();
+  syncActiveConversationFromState();
+  persistConversations();
   renderChat({ animateLast: options.animate !== false });
+  renderConversationHistory();
+
+  if (role === "assistant") {
+    maybeScheduleConversationTitleRefresh(state.activeConversationId, entry);
+  }
 }
 
 function setSending(isSending) {
   state.sending = isSending;
   const disabled = isSending || state.clearingChat || state.switchingModel;
-  btnSend.disabled = disabled;
-  btnClear.disabled = disabled;
+  if (btnSend) {
+    btnSend.disabled = disabled;
+    btnSend.title = isSending ? "Sending..." : "Send";
+    btnSend.setAttribute("aria-label", isSending ? "Sending..." : "Send");
+  }
+  if (btnClear) {
+    btnClear.disabled = disabled;
+  }
   btnPing.disabled = disabled;
+  if (btnNewConversation) {
+    btnNewConversation.disabled = disabled;
+  }
   messageInput.disabled = disabled;
   if (btnAttachMedia) {
     btnAttachMedia.disabled = disabled;
+  }
+  if (agentModeOpenclawBtn) {
+    agentModeOpenclawBtn.disabled = disabled;
+  }
+  if (agentModeHermesBtn) {
+    agentModeHermesBtn.disabled = disabled;
   }
   if (mediaInput) {
     mediaInput.disabled = disabled;
@@ -3457,6 +5144,12 @@ function setSending(isSending) {
   if (modelSelect) {
     modelSelect.disabled = disabled || state.models.length === 0;
   }
+  if (composerModelSelect) {
+    composerModelSelect.disabled = disabled || state.models.length === 0;
+  }
+  if (chatDispatchModeSelect) {
+    chatDispatchModeSelect.disabled = disabled;
+  }
   if (btnCommunitySearch) {
     btnCommunitySearch.disabled = disabled || state.community.searching;
   }
@@ -3464,11 +5157,10 @@ function setSending(isSending) {
     communityQueryInput.disabled = disabled || state.community.searching;
   }
   setRuntimeControlsDisabled(disabled || !state.modelRuntime.available);
+  setConcurrentModelsControlsDisabled(disabled);
+  applyAgentRuntimeAvailability();
 
-  if (isSending) {
-    btnSend.textContent = "Sending...";
-  } else {
-    btnSend.textContent = "Send";
+  if (!isSending) {
     messageInput.focus();
   }
   updateDeleteModelButtonState();
@@ -3479,19 +5171,41 @@ function createLiveResponseView() {
   const container = document.createElement("div");
   container.className = "live-response";
 
+  const pendingRow = document.createElement("div");
+  pendingRow.className = "bubble-row assistant pending-row";
+  const pendingBubble = document.createElement("div");
+  pendingBubble.className = "bubble assistant pending-bubble";
+  pendingBubble.innerHTML = renderWaitingResponseHtml();
+  pendingRow.appendChild(pendingBubble);
+
   const thinkingRow = document.createElement("div");
   thinkingRow.className = "thinking-live-row hidden";
   const thinkingTitle = document.createElement("div");
   thinkingTitle.className = "thinking-live-title";
-  thinkingTitle.textContent = "Thinking Process";
+  thinkingTitle.textContent = "thinking";
   const thinkingBody = document.createElement("div");
   thinkingBody.className = "thinking-live-body";
+  const openclawStageRow = document.createElement("div");
+  openclawStageRow.className = "openclaw-stage-row hidden";
+  const openclawStageText = document.createElement("span");
+  openclawStageText.className = "openclaw-stage-text";
+  const openclawStageDots = document.createElement("span");
+  openclawStageDots.className = "empty-ellipsis hidden";
+  openclawStageDots.setAttribute("aria-label", "running");
+  openclawStageDots.innerHTML = [
+    '<span class="dot dot-1">.</span>',
+    '<span class="dot dot-2">.</span>',
+    '<span class="dot dot-3">.</span>',
+  ].join("");
+  openclawStageRow.appendChild(openclawStageText);
+  openclawStageRow.appendChild(openclawStageDots);
   thinkingRow.appendChild(thinkingTitle);
   thinkingRow.appendChild(thinkingBody);
+  thinkingRow.appendChild(openclawStageRow);
 
   const thinkingDone = document.createElement("div");
   thinkingDone.className = "thinking-done-row hidden";
-  thinkingDone.textContent = "Thinking Completed";
+  thinkingDone.textContent = formatThinkingDoneText(0);
 
   const answerRow = document.createElement("div");
   answerRow.className = "bubble-row assistant";
@@ -3502,6 +5216,7 @@ function createLiveResponseView() {
   answerBubble.appendChild(answerStream);
   answerRow.appendChild(answerBubble);
 
+  container.appendChild(pendingRow);
   container.appendChild(thinkingRow);
   container.appendChild(thinkingDone);
   container.appendChild(answerRow);
@@ -3514,15 +5229,149 @@ function createLiveResponseView() {
   let renderedAnswer = "";
   let hadThinking = false;
   let thinkingClosed = false;
+  let streamDone = false;
   let typingTimer = 0;
   let answerAnimated = false;
+  let openclawStageVisible = false;
+  let pendingVisible = true;
+  let thinkingStartedAtMs = 0;
+  let thinkingSeconds = null;
+  const deferAnswerUntilDone = Boolean(state.settings && state.settings.openclaw_enabled);
+  let deferredAnswerText = "";
   const TYPE_DELAY_MS = 22;
   const idleWaiters = [];
+  const openclawStageLineRe = /^\[(?:openclaw|cypherclaw|hermes)\]\s+.+$/i;
+
+  if (deferAnswerUntilDone) {
+    answerRow.classList.add("hidden");
+  }
+
+  function hidePendingIndicator() {
+    if (!pendingVisible) return;
+    pendingVisible = false;
+    pendingRow.classList.add("hidden");
+  }
+
+  function setOpenClawStage(rawStage) {
+    const next = typeof rawStage === "string" ? rawStage.trim() : "";
+    if (!next) {
+      openclawStageVisible = false;
+      openclawStageRow.classList.add("hidden");
+      openclawStageDots.classList.add("hidden");
+      openclawStageText.textContent = "";
+      return;
+    }
+    if (/summarizing\s+final\s+answer/i.test(next)) {
+      return;
+    }
+
+    const hasEllipsis = /\.\.\.$/.test(next);
+    const textWithoutDots = hasEllipsis ? next.replace(/\.\.\.$/, "") : next;
+    openclawStageText.textContent = textWithoutDots.trim();
+    openclawStageDots.classList.toggle("hidden", !hasEllipsis);
+    openclawStageVisible = true;
+    openclawStageRow.classList.remove("hidden");
+  }
+
+  function appendThinkingDelta(delta) {
+    const text = typeof delta === "string" ? delta : String(delta || "");
+    if (!text) return;
+    hidePendingIndicator();
+    const trimmed = text.trim();
+    if (openclawStageLineRe.test(trimmed)) {
+      setOpenClawStage(trimmed);
+      return;
+    }
+    thinkingText += text;
+  }
+
+  function syncThinkingView() {
+    if (thinkingText.trim().length > 0 || openclawStageVisible) {
+      if (!hadThinking) {
+        thinkingStartedAtMs = Date.now();
+        thinkingRow.classList.remove("hidden");
+        thinkingDone.classList.add("hidden");
+      }
+      hadThinking = true;
+    }
+    thinkingBody.innerHTML = renderMarkdown(thinkingText);
+    thinkingBody.scrollTop = thinkingBody.scrollHeight;
+    chatFeed.scrollTop = chatFeed.scrollHeight;
+  }
+
+  function splitReasoningAndAnswerText(rawText) {
+    const text = typeof rawText === "string" ? rawText : String(rawText || "");
+    if (!text) {
+      return { thinking: "", answer: "", explicitAnswer: false };
+    }
+    const normalized = text.replace(/\r\n/g, "\n");
+    if (/<think>/i.test(normalized)) {
+      const thinkingParts = [];
+      let answer = normalized.replace(/<think>([\s\S]*?)<\/think>/gi, (_match, reasoning) => {
+        const chunk = String(reasoning || "").trim();
+        if (chunk) thinkingParts.push(chunk);
+        return "";
+      });
+      const openThink = /<think>([\s\S]*)$/i.exec(answer);
+      if (openThink) {
+        const tail = String(openThink[1] || "").trim();
+        if (tail) thinkingParts.push(tail);
+        answer = answer.slice(0, openThink.index);
+      }
+      const marker = FINAL_ANSWER_MARKER_RE.exec(answer);
+      if (marker && Number.isInteger(marker.index)) {
+        const leading = answer.slice(0, marker.index).trim();
+        if (leading) thinkingParts.push(leading);
+        answer = answer.slice(marker.index + marker[0].length);
+      }
+      answer = answer.replace(FINAL_ANSWER_HEADER_RE, "").trim();
+      return {
+        thinking: thinkingParts.join("\n\n").trim(),
+        answer,
+        explicitAnswer: true,
+      };
+    }
+
+    const marker = FINAL_ANSWER_MARKER_RE.exec(normalized);
+    if (marker && Number.isInteger(marker.index)) {
+      const thinking = normalized.slice(0, marker.index).replace(THINKING_HEADER_RE, "").trim();
+      const answer = normalized
+        .slice(marker.index + marker[0].length)
+        .replace(FINAL_ANSWER_HEADER_RE, "")
+        .trim();
+      return { thinking, answer, explicitAnswer: true };
+    }
+
+    if (THINKING_HEADER_RE.test(normalized) && !FINAL_ANSWER_HEADER_RE.test(normalized)) {
+      return {
+        thinking: normalized.replace(THINKING_HEADER_RE, "").trim(),
+        answer: "",
+        explicitAnswer: false,
+      };
+    }
+
+    return { thinking: "", answer: normalized, explicitAnswer: false };
+  }
+
+  function resolveThinkingSeconds() {
+    if (!hadThinking) return null;
+    const endMs = Date.now();
+    const startMs = Number.isFinite(thinkingStartedAtMs) && thinkingStartedAtMs > 0
+      ? thinkingStartedAtMs
+      : endMs;
+    return Math.max(0, (endMs - startMs) / 1000);
+  }
 
   function closeThinkingBox() {
     if (thinkingClosed) return;
     thinkingClosed = true;
+    setOpenClawStage("");
+    if (deferAnswerUntilDone) {
+      answerRow.classList.remove("hidden");
+    }
     if (hadThinking) {
+      thinkingSeconds = resolveThinkingSeconds();
+      thinkingDone.textContent = formatThinkingDoneText(thinkingSeconds);
       thinkingRow.classList.add("hidden");
       thinkingDone.classList.remove("hidden");
     } else {
@@ -3575,7 +5424,6 @@ function createLiveResponseView() {
 
   function runTypingTick() {
     typingTimer = 0;
-    closeThinkingBox();
     if (!answerQueue.length) {
       return;
     }
@@ -3619,29 +5467,55 @@ function createLiveResponseView() {
   return {
     appendThinking(delta) {
       if (!delta) return;
-      thinkingText += delta;
-      if (thinkingText.trim().length > 0) {
-        if (!hadThinking) {
-          thinkingRow.classList.remove("hidden");
-          thinkingDone.classList.add("hidden");
-        }
-        hadThinking = true;
-      }
-      thinkingBody.innerHTML = renderMarkdown(thinkingText);
-      thinkingBody.scrollTop = thinkingBody.scrollHeight;
-      chatFeed.scrollTop = chatFeed.scrollHeight;
+      appendThinkingDelta(delta);
+      syncThinkingView();
     },
     appendAnswer(delta) {
       if (!delta) return;
-      answerText += delta;
-      answerQueue += delta;
+      hidePendingIndicator();
+      if (deferAnswerUntilDone) {
+        // OpenClaw stream already sends separated channels:
+        // `thinking_delta` for reasoning and `answer_delta` for final answer.
+        // Do not re-split here, otherwise answers can be misrouted back to thinking.
+        deferredAnswerText += String(delta || "");
+        return;
+      }
+      const split = splitReasoningAndAnswerText(delta);
+      if (split.thinking) {
+        appendThinkingDelta(split.thinking.endsWith("\n") ? split.thinking : `${split.thinking}\n`);
+        syncThinkingView();
+      }
+      if (!split.answer) return;
+      answerText += split.answer;
+      answerQueue += split.answer;
       scheduleTyping();
     },
+    markDone(donePayload) {
+      streamDone = true;
+      hidePendingIndicator();
+      if (deferAnswerUntilDone && donePayload && typeof donePayload === "object") {
+        const doneThinking = String(donePayload.thinking || "").trim();
+        if (doneThinking) {
+          appendThinkingDelta(doneThinking.endsWith("\n") ? doneThinking : `${doneThinking}\n`);
+          syncThinkingView();
+        }
+        const doneAnswer = extractFinalAnswerFromDone(donePayload);
+        if (doneAnswer) {
+          // Avoid duplicated final answer when stream already emitted answer_delta.
+          const delta = trimContinuationOverlap(deferredAnswerText, doneAnswer);
+          if (delta) {
+            deferredAnswerText += delta;
+          }
+        }
+      }
+    },
     hasAnswer() {
-      return sanitizeFinalAnswerText(answerText).trim().length > 0;
+      const probe = deferAnswerUntilDone ? `${answerText}${deferredAnswerText}` : answerText;
+      return sanitizeFinalAnswerText(probe).trim().length > 0;
     },
     getAnswer() {
-      return sanitizeFinalAnswerText(answerText).trim();
+      const probe = deferAnswerUntilDone ? `${answerText}${deferredAnswerText}` : answerText;
+      return sanitizeFinalAnswerText(probe).trim();
     },
     hasThinking() {
       return hadThinking;
@@ -3651,8 +5525,14 @@ function createLiveResponseView() {
     },
     waitForIdle,
     finalize() {
-      flushAllTyping();
+      hidePendingIndicator();
+      if (deferAnswerUntilDone && deferredAnswerText) {
+        answerText += deferredAnswerText;
+        answerQueue += deferredAnswerText;
+        deferredAnswerText = "";
+      }
       closeThinkingBox();
+      flushAllTyping();
       const visibleAnswer = sanitizeFinalAnswerText(answerText).trim();
       if (!visibleAnswer) {
         answerBubble.innerHTML = renderEmptyResponseHtml();
@@ -3663,6 +5543,7 @@ function createLiveResponseView() {
         thinking: thinkingText.trim(),
         answer: visibleAnswer,
         hadThinking,
+        thinkingSeconds,
       };
     },
     remove() {
@@ -3673,7 +5554,42 @@ function createLiveResponseView() {
 }
 
 async function streamChatResponse(payload, handlers = {}) {
-  const response = await fetch("/api/chat/stream", {
+  const buildStructuredError = (message, details = {}) => {
+    const err = new Error(String(message || "Request failed"));
+    if (details && typeof details === "object") {
+      Object.keys(details).forEach((key) => {
+        err[key] = details[key];
+      });
+    }
+    return err;
+  };
+
+  const parseApiErrorPayload = (raw, fallbackMessage) => {
+    const envelope = raw && typeof raw === "object" ? raw : {};
+    const detail = envelope && typeof envelope.detail === "object"
+      ? envelope.detail
+      : envelope;
+    const base = detail && typeof detail === "object" ? detail : {};
+    const message = String(
+      base.message
+      || envelope.message
+      || base.detail
+      || envelope.detail
+      || envelope.error
+      || fallbackMessage,
+    );
+    return {
+      message,
+      errorType: String(base.error_type || envelope.error_type || ""),
+      runtime: String(base.runtime || envelope.runtime || ""),
+      model: String(base.model || envelope.model || ""),
+      reason: String(base.reason || envelope.reason || ""),
+      retryable: Boolean(base.retryable || envelope.retryable),
+      probeWarning: String(base.probe_warning || envelope.probe_warning || ""),
+    };
+  };
+
+  let response = await fetch("/api/chat/stream", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -3683,13 +5599,47 @@ async function streamChatResponse(payload, handlers = {}) {
 
   if (!response.ok) {
     let message = `Request failed (${response.status})`;
+    let parsed = {
+      message,
+      errorType: "",
+      runtime: "",
+      model: "",
+      reason: "",
+      retryable: false,
+      probeWarning: "",
+    };
     try {
       const err = await response.json();
-      message = err.detail || err.error || message;
+      parsed = parseApiErrorPayload(err, message);
+      message = parsed.message;
     } catch {
       // keep default message
     }
-    throw new Error(message);
+    // Fallback: if streaming endpoint is unstable, try non-stream mode once.
+    if (response.status >= 500 && !payload.openclaw_enabled) {
+      try {
+        const fallbackPayload = await requestSingleChatCompletion(payload);
+        const fallbackText = extractFinalAnswerFromDone(fallbackPayload);
+        if (fallbackText) {
+          handlers.onAnswer?.(fallbackText);
+        }
+        handlers.onDone?.(fallbackPayload);
+        return fallbackPayload;
+      } catch (fallbackError) {
+        const fallbackMessage = fallbackError instanceof Error
+          ? fallbackError.message
+          : String(fallbackError);
+        throw new Error(`${message}; non-stream fallback failed: ${fallbackMessage}`);
+      }
+    }
+    throw buildStructuredError(message, {
+      errorType: parsed.errorType,
+      runtime: parsed.runtime,
+      model: parsed.model,
+      reason: parsed.reason,
+      retryable: parsed.retryable,
+      probeWarning: parsed.probeWarning,
+    });
   }
 
   if (!response.body) {
@@ -3730,7 +5680,17 @@ async function streamChatResponse(payload, handlers = {}) {
             doneEvent = eventData;
             handlers.onDone?.(eventData);
           } else if (eventType === "error") {
-            throw new Error(String(eventData.message || "Stream error"));
+            throw buildStructuredError(
+              String(eventData.message || "Stream error"),
+              {
+                errorType: String(eventData.error_type || ""),
+                runtime: String(eventData.runtime || ""),
+                model: String(eventData.model || ""),
+                reason: String(eventData.reason || ""),
+                retryable: Boolean(eventData.retryable),
+                probeWarning: String(eventData.probe_warning || ""),
+              },
+            );
           }
         }
       }
@@ -3747,19 +5707,188 @@ async function streamChatResponse(payload, handlers = {}) {
         doneEvent = eventData;
         handlers.onDone?.(eventData);
       } else if (eventData && eventData.type === "error") {
-        throw new Error(String(eventData.message || "Stream error"));
+        throw buildStructuredError(
+          String(eventData.message || "Stream error"),
+          {
+            errorType: String(eventData.error_type || ""),
+            runtime: String(eventData.runtime || ""),
+            model: String(eventData.model || ""),
+            reason: String(eventData.reason || ""),
+            retryable: Boolean(eventData.retryable),
+            probeWarning: String(eventData.probe_warning || ""),
+          },
+        );
       }
-    } catch {
-      // Ignore trailing parse errors.
+    } catch (parseError) {
+      if (parseError instanceof SyntaxError) {
+        // Ignore trailing parse errors.
+      } else {
+        throw parseError;
+      }
     }
   }
 
   return doneEvent;
 }
 
+function extractStopReason(donePayload) {
+  if (!donePayload || typeof donePayload !== "object") return "";
+  const candidates = [
+    donePayload.finish_reason,
+    donePayload.stop_reason,
+    donePayload.finishReason,
+    donePayload.stopReason,
+    donePayload.metrics && donePayload.metrics.finish_reason,
+    donePayload.metrics && donePayload.metrics.stop_reason,
+    donePayload.openclaw && donePayload.openclaw.stop_reason,
+    donePayload.openclaw && donePayload.openclaw.stopReason,
+    donePayload.cypherclaw && donePayload.cypherclaw.stop_reason,
+    donePayload.cypherclaw && donePayload.cypherclaw.stopReason,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") continue;
+    const normalized = candidate.trim().toLowerCase();
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+function isLikelyTruncatedResponse(donePayload, maxTokens) {
+  if (!donePayload || typeof donePayload !== "object") return false;
+  const stopReason = extractStopReason(donePayload);
+  const hardStops = new Set([
+    "length",
+    "max_tokens",
+    "max_output_tokens",
+    "max_completion_tokens",
+    "max_new_tokens",
+    "token_limit",
+    "context_length",
+    "context_length_exceeded",
+    "incomplete",
+    "truncated",
+    "max_turns",
+    "max_steps",
+    "max_iterations",
+  ]);
+  if (hardStops.has(stopReason)) return true;
+  if (stopReason && /(max|length|token|truncat|incomplete|limit)/.test(stopReason)) {
+    return true;
+  }
+
+  const completionTokens = Number(
+    donePayload.metrics && donePayload.metrics.completion_tokens,
+  );
+  const cap = Number(maxTokens);
+  if (Number.isFinite(completionTokens) && Number.isFinite(cap) && cap >= 64) {
+    const threshold = Math.max(cap - 2, Math.floor(cap * 0.98));
+    if (completionTokens >= threshold) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function trimContinuationOverlap(existingText, continuationText) {
+  const existing = String(existingText || "");
+  let incoming = String(continuationText || "");
+  if (!incoming) return "";
+  if (!existing) return incoming;
+
+  const maxOverlap = Math.min(600, existing.length, incoming.length);
+  for (let size = maxOverlap; size >= 24; size -= 1) {
+    if (existing.slice(-size) === incoming.slice(0, size)) {
+      incoming = incoming.slice(size);
+      break;
+    }
+  }
+
+  const trimmedIncoming = incoming.trim();
+  if (!trimmedIncoming) return "";
+  if (existing.includes(trimmedIncoming) && trimmedIncoming.length < existing.length) {
+    return "";
+  }
+  return incoming;
+}
+
+async function requestAnswerContinuation({
+  userText,
+  historyForRequest,
+  partialAnswer,
+  requestServerUrl,
+}) {
+  const partial = String(partialAnswer || "").trim();
+  if (!partial) return { text: "", payload: null };
+
+  const partialTail = partial.slice(-5000);
+  const agentModeEnabled = Boolean(state.settings.openclaw_enabled);
+  const agentRuntime = state.settings.agent_runtime === "hermes" ? "hermes" : "openclaw";
+  const continuationPrompt = [
+    "Continue your previous answer from exactly where it stopped.",
+    "Do not repeat any text already written.",
+    "Do not restart from the beginning.",
+    "Output only the continuation.",
+    "",
+    "Original user request:",
+    userText || "(empty)",
+    "",
+    "Existing partial answer (tail):",
+    partialTail,
+  ].join("\n");
+
+  const continuationHistory = Array.isArray(historyForRequest) ? historyForRequest.slice() : [];
+  if (userText) {
+    continuationHistory.push({ role: "user", content: userText });
+  }
+  continuationHistory.push({ role: "assistant", content: partialTail });
+
+  const response = await fetch("/api/chat", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      message: continuationPrompt,
+      history: continuationHistory,
+      server_url: requestServerUrl,
+      max_tokens: Math.max(256, Number(state.settings.max_tokens || 1024)),
+      temperature: clamp(Number(state.settings.temperature || 0.7), 0, 2),
+      system_prompt: state.settings.system_prompt || "",
+      model: state.selectedModel,
+      ...buildAgentRuntimeRequestFields({
+        enabled: agentModeEnabled,
+        runtime: agentRuntime,
+      }),
+      conversation_id: state.activeConversationId || "",
+    }),
+  });
+
+  if (!response.ok) {
+    let message = `Continuation failed (${response.status})`;
+    try {
+      const err = await response.json();
+      const detail = err && typeof err.detail === "object" ? err.detail : err;
+      message = detail && (detail.message || detail.detail || detail.error || err.error)
+        ? String(detail.message || detail.detail || detail.error || err.error)
+        : message;
+    } catch {
+      // keep default
+    }
+    throw new Error(message);
+  }
+
+  const payload = await response.json();
+  const rawText = extractFinalAnswerFromDone(payload) || payload.reply || "";
+  const text = sanitizeFinalAnswerText(String(rawText || "")).trim();
+  return { text, payload };
+}
+
 async function recoverFinalAnswer(userText, thinkingText) {
   const reasoningText = String(thinkingText || "").trim();
   const compactReasoning = reasoningText.slice(-6000);
+  const requestServerUrl = resolveChatServerUrl(state.selectedModel);
+  const agentModeEnabled = Boolean(state.settings.openclaw_enabled);
+  const agentRuntime = state.settings.agent_runtime === "hermes" ? "hermes" : "openclaw";
 
   const response = await fetch("/api/chat", {
     method: "POST",
@@ -3778,12 +5907,17 @@ async function recoverFinalAnswer(userText, thinkingText) {
         "Final Answer: <answer>",
       ].join("\n"),
       history: [],
-      server_url: state.settings.server_url,
+      server_url: requestServerUrl,
       max_tokens: Math.max(96, Math.min(256, state.settings.max_tokens || 256)),
       temperature: 0.2,
       system_prompt:
         "You are an answer synthesizer. Use the provided reasoning transcript and output only the final answer. Do not include thinking process.",
       model: state.selectedModel,
+      ...buildAgentRuntimeRequestFields({
+        enabled: agentModeEnabled,
+        runtime: agentRuntime,
+      }),
+      conversation_id: state.activeConversationId || "",
     }),
   });
 
@@ -3794,6 +5928,184 @@ async function recoverFinalAnswer(userText, thinkingText) {
   }
 
   return String(data.reply || "").trim();
+}
+
+async function requestSingleChatCompletion(payload) {
+  const response = await fetch("/api/chat", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  let data = null;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
+
+  if (!response.ok || !data || data.ok !== true) {
+    const detail = data && typeof data.detail === "object" ? data.detail : data;
+    const message = detail && (detail.message || detail.detail || detail.error || data.message || data.error)
+      ? String(detail.message || detail.detail || detail.error || data.message || data.error)
+      : `Request failed (${response.status})`;
+    const err = new Error(message);
+    if (detail && typeof detail === "object") {
+      err.errorType = String(detail.error_type || "");
+      err.runtime = String(detail.runtime || "");
+      err.model = String(detail.model || "");
+      err.reason = String(detail.reason || "");
+      err.retryable = Boolean(detail.retryable);
+      err.probeWarning = String(detail.probe_warning || "");
+    }
+    throw err;
+  }
+
+  return data;
+}
+
+function buildParallelMergedReply(results) {
+  const sections = results.map((item) => {
+    const modelId = String(item.model || "unknown-model");
+    if (!item.ok) {
+      return `### ${modelId}\n[Error] ${item.error || "Unknown error"}`;
+    }
+    const reply = String(item.reply || "").trim() || "(empty response)";
+    return `### ${modelId}\n${reply}`;
+  });
+  return `**Parallel fan-out (${results.length} models)**\n\n${sections.join("\n\n---\n\n")}`;
+}
+
+function aggregateParallelMetrics(results) {
+  const successful = results.filter((item) => item.ok && item.metrics && typeof item.metrics === "object");
+  if (!successful.length) {
+    return {};
+  }
+
+  let promptTokens = 0;
+  let completionTokens = 0;
+  let totalTokens = 0;
+  let hasPrompt = false;
+  let hasCompletion = false;
+  let hasTotal = false;
+  let maxLatencyMs = null;
+
+  successful.forEach((item) => {
+    const metrics = item.metrics || {};
+    if (Number.isFinite(metrics.prompt_tokens)) {
+      promptTokens += Number(metrics.prompt_tokens);
+      hasPrompt = true;
+    }
+    if (Number.isFinite(metrics.completion_tokens)) {
+      completionTokens += Number(metrics.completion_tokens);
+      hasCompletion = true;
+    }
+    if (Number.isFinite(metrics.total_tokens)) {
+      totalTokens += Number(metrics.total_tokens);
+      hasTotal = true;
+    }
+    if (Number.isFinite(metrics.latency_ms)) {
+      const latency = Number(metrics.latency_ms);
+      maxLatencyMs = maxLatencyMs === null ? latency : Math.max(maxLatencyMs, latency);
+    }
+  });
+
+  if (!hasTotal && (hasPrompt || hasCompletion)) {
+    totalTokens = (hasPrompt ? promptTokens : 0) + (hasCompletion ? completionTokens : 0);
+    hasTotal = true;
+  }
+
+  let tps = null;
+  if (hasCompletion && Number.isFinite(maxLatencyMs) && maxLatencyMs > 0) {
+    tps = completionTokens / (maxLatencyMs / 1000.0);
+  }
+
+  return {
+    latency_ms: Number.isFinite(maxLatencyMs) ? Number(maxLatencyMs.toFixed(2)) : null,
+    prompt_tokens: hasPrompt ? promptTokens : null,
+    completion_tokens: hasCompletion ? completionTokens : null,
+    total_tokens: hasTotal ? totalTokens : null,
+    tokens_per_second: Number.isFinite(tps) ? Number(tps.toFixed(2)) : null,
+  };
+}
+
+async function runParallelChatRequest({
+  userText,
+  userApiContent,
+  historyForRequest,
+  conversationId,
+}) {
+  if (state.managerEnabled && state.selectedModel && !isModelRunning(state.selectedModel)) {
+    const switched = await switchManagedModel(state.selectedModel);
+    if (!switched) {
+      throw new Error(`Cannot activate selected model for parallel mode: ${state.selectedModel}`);
+    }
+    await refreshStatus({ silent: true });
+  }
+
+  const targetModels = getParallelTargetModels();
+  if (targetModels.length < 2) {
+    return {
+      fallback_single: true,
+      target_models: targetModels,
+    };
+  }
+
+  const tasks = targetModels.map(async (modelId) => {
+    const requestServerUrl = resolveChatServerUrl(modelId);
+    const payload = {
+      message: userText || "Please analyze the attached media.",
+      user_content: userApiContent,
+      history: historyForRequest,
+      server_url: requestServerUrl,
+      max_tokens: state.settings.max_tokens,
+      temperature: state.settings.temperature,
+      system_prompt: state.settings.system_prompt,
+      model: modelId,
+      ...buildAgentRuntimeRequestFields({
+        enabled: Boolean(state.settings.openclaw_enabled),
+        runtime: state.settings.agent_runtime || "auto",
+      }),
+      conversation_id: conversationId || state.activeConversationId || "",
+    };
+
+    try {
+      const data = await requestSingleChatCompletion(payload);
+      return {
+        ok: true,
+        model: modelId,
+        reply: String(data.reply || "").trim(),
+        metrics: data.metrics || {},
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        ok: false,
+        model: modelId,
+        error: message,
+      };
+    }
+  });
+
+  const results = await Promise.all(tasks);
+  const successCount = results.filter((item) => item.ok).length;
+  if (successCount === 0) {
+    const details = results
+      .map((item) => `${item.model}: ${item.error || "failed"}`)
+      .join("; ");
+    throw new Error(`All parallel model requests failed. ${details}`);
+  }
+
+  return {
+    fallback_single: false,
+    target_models: targetModels,
+    results,
+    merged_reply: buildParallelMergedReply(results),
+    metrics: aggregateParallelMetrics(results),
+    success_count: successCount,
+  };
 }
 
 function toFiniteNumber(value) {
@@ -3822,25 +6134,59 @@ function applyRuntimeMetrics(runtimeData) {
 async function refreshStatus(options = {}) {
   if (state.statusRefreshing) return;
   state.statusRefreshing = true;
+  const switchVersionAtStart = Number(state.modelSwitchVersion || 0);
+  const isStaleModelRefresh = () => Number(state.modelSwitchVersion || 0) !== switchVersionAtStart;
 
   try {
     const silent = options && options.silent === true;
-    const target = normalizeServerUrl(serverUrlInput.value || state.settings.server_url);
+    const target = normalizeServerUrl(
+      (serverUrlInput ? serverUrlInput.value : state.settings.server_url) || state.settings.server_url,
+    );
+
+    if (!isServerModeEnabled()) {
+      state.managerEnabled = false;
+      state.modelRuntime.available = false;
+      state.activeServerUrl = "";
+      state.modelServerUrls = {};
+      state.runningModels = [];
+      state.concurrentModels = [];
+      setRuntimeControlsDisabled(true);
+      if (modelsHint) {
+        modelsHint.textContent = "Runtime options are paused while Server Mode is off.";
+      }
+      state.community.currentJob = null;
+      renderCommunityJob(null);
+      applyIntegrityReport(null, { silent: true });
+      hideNoModelBanner({ resetState: true });
+      serverBadge.textContent = "Server: mode off";
+      setModelSelectLoading("(Server mode off)");
+      state.dashboard.serverOnline = null;
+      applyRuntimeMetrics(null);
+      renderDashboard();
+      renderConcurrentModelsSettings();
+      return;
+    }
 
     if (!silent) {
       serverBadge.textContent = `Server: checking ${target}`;
       setModelSelectLoading("(Detecting...)");
     }
 
+    let managerReportedActiveModel = "";
     const managerData = await fetchManagerModels();
+    if (isStaleModelRefresh()) {
+      return;
+    }
     if (managerData) {
       const managerServer = normalizeServerUrl(managerData.server_url || target);
       const managerModels = Array.isArray(managerData.available_models)
         ? managerData.available_models
         : [];
+      applyManagerRoutingData(managerData);
       const managerActive = (
         typeof managerData.active_model === "string" && managerData.active_model.trim()
       ) ? managerData.active_model.trim() : "";
+      managerReportedActiveModel = managerActive;
       syncSelectedModel(
         managerServer,
         managerModels,
@@ -3851,12 +6197,13 @@ async function refreshStatus(options = {}) {
       if (managerActive) {
         state.activeModel = managerActive;
         state.selectedModel = managerActive;
-        if (modelSelect && state.models.includes(managerActive)) {
-          modelSelect.value = managerActive;
-        }
+        applyModelSelectValue(managerActive);
         setModelPrefForServer(managerServer, managerActive);
+        if (!state.activeServerUrl && state.modelServerUrls[managerActive]) {
+          state.activeServerUrl = state.modelServerUrls[managerActive];
+        }
       } else {
-        state.activeModel = state.selectedModel;
+        state.activeModel = "";
       }
       if (managerData.runtime_config) {
         state.modelRuntime.available = true;
@@ -3878,8 +6225,13 @@ async function refreshStatus(options = {}) {
         state.community.currentJob = managerData.community_job || null;
         renderCommunityJob(state.community.currentJob);
       }
+      renderConcurrentModelsSettings();
     } else {
       state.modelRuntime.available = false;
+      state.activeServerUrl = "";
+      state.modelServerUrls = {};
+      state.runningModels = [];
+      state.concurrentModels = [];
       setRuntimeControlsDisabled(true);
       if (modelsHint) {
         modelsHint.textContent = "Runtime options are available only in desktop manager mode.";
@@ -3888,14 +6240,22 @@ async function refreshStatus(options = {}) {
       renderCommunityJob(null);
       applyIntegrityReport(null, { silent: true });
       hideNoModelBanner({ resetState: true });
+      renderConcurrentModelsSettings();
     }
 
+    const statusTarget = (
+      managerData && state.activeServerUrl
+    ) ? state.activeServerUrl : target;
+
     try {
-      const response = await fetch(`/api/status?server_url=${encodeURIComponent(target)}`);
+      const response = await fetch(`/api/status?server_url=${encodeURIComponent(statusTarget)}`);
       const data = await response.json();
+      if (isStaleModelRefresh()) {
+        return;
+      }
 
       if (!response.ok || !data.ok) {
-        serverBadge.textContent = `Server: offline (${target})`;
+        serverBadge.textContent = `Server: offline (${statusTarget})`;
         if (!managerData) {
           state.models = [];
           state.modelCapabilities = {};
@@ -3909,13 +6269,19 @@ async function refreshStatus(options = {}) {
         return;
       }
 
-      const serverUrl = normalizeServerUrl(data.server_url || target);
+      const serverUrl = normalizeServerUrl(data.server_url || statusTarget);
       if (!managerData) {
         const models = normalizeModelList(data.models);
         syncSelectedModel(serverUrl, models, data.model, data.model_capabilities);
         state.activeModel = state.selectedModel;
-      } else if (!state.activeModel && typeof data.model === "string" && data.model.trim()) {
-        state.activeModel = data.model.trim();
+        state.activeServerUrl = serverUrl;
+      } else if (!managerReportedActiveModel && typeof data.model === "string" && data.model.trim()) {
+        const runtimeModel = data.model.trim();
+        state.activeModel = runtimeModel;
+        applyModelSelectValue(runtimeModel);
+        if (!state.activeServerUrl) {
+          state.activeServerUrl = serverUrl;
+        }
       }
 
       serverBadge.textContent = `Server: online (${serverUrl})`;
@@ -3925,7 +6291,7 @@ async function refreshStatus(options = {}) {
         state.activeModel || state.selectedModel || data.model || state.dashboard.lastModel;
       renderDashboard();
     } catch (error) {
-      serverBadge.textContent = `Server: offline (${target})`;
+      serverBadge.textContent = `Server: offline (${statusTarget})`;
       if (!managerData) {
         state.models = [];
         state.modelCapabilities = {};
@@ -3939,6 +6305,7 @@ async function refreshStatus(options = {}) {
     }
   } finally {
     state.statusRefreshing = false;
+    applyAgentRuntimeAvailability();
   }
 }
 
@@ -3951,17 +6318,25 @@ function applyChatMetrics(data) {
 
   const resultModel = typeof data.model === "string" ? data.model.trim() : "";
   const requestModel = typeof data.request_model === "string" ? data.request_model.trim() : "";
-  if (resultModel) {
+  const canSelectResultModel = Boolean(resultModel) && state.models.includes(resultModel);
+  const canSelectRequestModel = Boolean(requestModel) && state.models.includes(requestModel);
+
+  if (canSelectResultModel) {
     d.lastModel = resultModel;
     state.activeModel = resultModel;
     state.selectedModel = resultModel;
-    if (modelSelect && state.models.includes(resultModel)) {
-      modelSelect.value = resultModel;
-    }
+    applyModelSelectValue(resultModel);
     setModelPrefForServer(state.settings.server_url, resultModel);
-  } else if (requestModel) {
+  } else if (canSelectRequestModel) {
     d.lastModel = requestModel;
     state.activeModel = requestModel;
+    state.selectedModel = requestModel;
+    applyModelSelectValue(requestModel);
+    setModelPrefForServer(state.settings.server_url, requestModel);
+  } else if (resultModel) {
+    d.lastModel = resultModel;
+  } else if (requestModel) {
+    d.lastModel = requestModel;
   }
 
   if (!metrics || typeof metrics !== "object") {
@@ -4019,17 +6394,25 @@ async function sendMessage() {
   state.settings = readSettingsFromInputs();
   saveStoredSettings();
 
+  if (!isServerModeEnabled()) {
+    showToast("Server mode is OFF. Turn it on in Server Mode page first.", 2200);
+    return;
+  }
+
   const selectedFromUi =
-    modelSelect && typeof modelSelect.value === "string" ? modelSelect.value.trim() : "";
+    (composerModelSelect && typeof composerModelSelect.value === "string" && composerModelSelect.value.trim())
+    || (modelSelect && typeof modelSelect.value === "string" ? modelSelect.value.trim() : "");
   state.selectedModel = selectedFromUi || state.selectedModel || "";
   if (!state.selectedModel) {
     showToast("No model is available. Install one from Community first.", 2400);
     return;
   }
   setModelPrefForServer(state.settings.server_url, state.selectedModel);
+  applyModelSelectValue(state.selectedModel);
 
   if (
     state.managerEnabled &&
+    !isParallelDispatchMode() &&
     state.selectedModel &&
     state.selectedModel !== state.activeModel
   ) {
@@ -4062,53 +6445,101 @@ async function sendMessage() {
   messageInput.value = "";
   setSending(true);
 
-  const liveView = createLiveResponseView();
+  let liveView = null;
   let donePayload = null;
+  const requestServerUrl = resolveChatServerUrl(state.selectedModel);
+  let openclawEnabled = Boolean(state.settings.openclaw_enabled);
+  let openclawRuntime = state.settings.agent_runtime === "hermes" ? "hermes" : "openclaw";
 
   try {
+    if (openclawEnabled) {
+      const blockedReason = getAgentRuntimeBlockedReason({
+        runtime: openclawRuntime,
+        serverUrl: requestServerUrl,
+        modelId: state.selectedModel,
+      });
+      if (blockedReason) {
+        disableAgentModeWithReason(blockedReason);
+        throw new Error(`${getAgentRuntimeLabel(openclawRuntime)} unavailable: ${blockedReason}`);
+      }
+    }
+
+    if (openclawEnabled && openclawRuntime === "openclaw") {
+      const now = Date.now();
+      const warmupStaleByTime = !state.openclawWarmupLastAt || (now - state.openclawWarmupLastAt) > 4 * 60 * 1000;
+      const warmupStaleByRoute = (
+        state.openclawWarmupModel !== state.selectedModel
+        || state.openclawWarmupServerUrl !== requestServerUrl
+      );
+      if (warmupStaleByTime || warmupStaleByRoute) {
+        void warmupOpenClawRuntime({ silent: true });
+      }
+    }
+    if (isParallelDispatchMode() && !openclawEnabled) {
+      const parallel = await runParallelChatRequest({
+        userText: text,
+        userApiContent,
+        historyForRequest,
+        conversationId: state.activeConversationId || "",
+      });
+
+      if (!parallel.fallback_single) {
+        pushMessage("assistant", parallel.merged_reply, { thinkingComplete: false });
+        applyChatMetrics({
+          model: state.selectedModel,
+          request_model: state.selectedModel,
+          metrics: parallel.metrics || {},
+        });
+        showToast(
+          `Parallel completed: ${parallel.success_count}/${parallel.target_models.length} model(s) succeeded.`,
+          2000,
+        );
+        refreshStatus({ silent: true });
+        return;
+      }
+
+      showToast("Parallel mode needs at least two running models. Fallback to single model.", 2100);
+    } else if (isParallelDispatchMode() && openclawEnabled) {
+      showToast(`${openclawRuntime === "hermes" ? "Hermes" : "OpenClaw"} mode currently uses single dispatch.`, 1800);
+    }
+
+    liveView = createLiveResponseView();
     donePayload = await streamChatResponse(
       {
         message: text || "Please analyze the attached media.",
         user_content: userApiContent,
         history: historyForRequest,
-        server_url: state.settings.server_url,
+        server_url: requestServerUrl,
         max_tokens: state.settings.max_tokens,
         temperature: state.settings.temperature,
         system_prompt: state.settings.system_prompt,
         model: state.selectedModel,
+        ...buildAgentRuntimeRequestFields({
+          enabled: openclawEnabled,
+          runtime: openclawRuntime,
+        }),
+        conversation_id: state.activeConversationId || "",
       },
       {
         onThinking: (delta) => {
-          liveView.appendThinking(delta);
+          if (liveView) liveView.appendThinking(delta);
         },
         onAnswer: (delta) => {
-          liveView.appendAnswer(delta);
+          if (liveView) liveView.appendAnswer(delta);
+        },
+        onDone: (eventData) => {
+          if (liveView) liveView.markDone(eventData);
         },
       },
     );
 
+    if (!liveView) {
+      throw new Error("Live response view is unavailable.");
+    }
+
     const doneAnswer = extractFinalAnswerFromDone(donePayload);
     if (doneAnswer && !liveView.hasAnswer()) {
       liveView.appendAnswer(doneAnswer);
-    }
-
-    let recoveredAnswer = "";
-    if (!liveView.hasAnswer() && liveView.hasThinking() && liveView.getThinking()) {
-      showToast("Synthesizing final answer...", 1400);
-      try {
-        recoveredAnswer = await recoverFinalAnswer(
-          text || userDisplayText,
-          liveView.getThinking(),
-        );
-      } catch (recoverError) {
-        const recoverMessage =
-          recoverError instanceof Error ? recoverError.message : String(recoverError);
-        showToast(`Final answer recovery failed: ${recoverMessage}`, 2400);
-      }
-    }
-
-    if (recoveredAnswer && !liveView.hasAnswer()) {
-      liveView.appendAnswer(recoveredAnswer);
     }
 
     await liveView.waitForIdle();
@@ -4118,12 +6549,11 @@ async function sendMessage() {
     if (finalAnswer && finalAnswer !== EMPTY_RESPONSE_SENTINEL) {
       finalAnswer = sanitizeFinalAnswerText(finalAnswer).trim();
     }
-    if (!finalAnswer) {
-      finalAnswer = liveResult.hadThinking
-        ? "No final answer was generated. Try increasing max tokens or ask for a shorter thinking process."
-        : EMPTY_RESPONSE_SENTINEL;
-    }
-    pushMessage("assistant", finalAnswer, { thinkingComplete: liveResult.hadThinking });
+    if (!finalAnswer) finalAnswer = EMPTY_RESPONSE_SENTINEL;
+    pushMessage("assistant", finalAnswer, {
+      thinkingComplete: liveResult.hadThinking,
+      thinkingSeconds: liveResult.thinkingSeconds,
+    });
 
     if (donePayload && typeof donePayload === "object") {
       applyChatMetrics(donePayload);
@@ -4136,8 +6566,56 @@ async function sendMessage() {
     }
     refreshStatus({ silent: true });
   } catch (error) {
-    liveView.remove();
-    const message = error instanceof Error ? error.message : String(error);
+    if (liveView) {
+      liveView.remove();
+    }
+    let message = error instanceof Error ? error.message : String(error);
+    const errorType = error && typeof error === "object"
+      ? String(error.errorType || "")
+      : "";
+    if (openclawEnabled && errorType === "agent_runtime_failed") {
+      const runtimeLabel = getAgentRuntimeLabel(openclawRuntime);
+      const retryAgent = window.confirm(
+        `${message}\n\nPress OK to retry ${runtimeLabel}.\nPress Cancel to fallback to normal chat for this message only.`,
+      );
+      try {
+        const recoveryPayload = await requestSingleChatCompletion({
+          message: text || "Please analyze the attached media.",
+          user_content: userApiContent,
+          history: historyForRequest,
+          server_url: requestServerUrl,
+          max_tokens: state.settings.max_tokens,
+          temperature: state.settings.temperature,
+          system_prompt: state.settings.system_prompt,
+          model: state.selectedModel,
+          ...buildAgentRuntimeRequestFields({
+            enabled: retryAgent ? openclawEnabled : false,
+            runtime: retryAgent ? openclawRuntime : "auto",
+          }),
+          conversation_id: state.activeConversationId || "",
+        });
+        let recoveryAnswer = extractFinalAnswerFromDone(recoveryPayload);
+        if (!recoveryAnswer) {
+          recoveryAnswer = String(recoveryPayload.reply || "").trim();
+        }
+        recoveryAnswer = sanitizeFinalAnswerText(recoveryAnswer).trim();
+        if (!recoveryAnswer) {
+          recoveryAnswer = EMPTY_RESPONSE_SENTINEL;
+        }
+        pushMessage("assistant", recoveryAnswer, {
+          thinkingComplete: false,
+          thinkingSeconds: null,
+        });
+        applyChatMetrics(recoveryPayload);
+        if (!retryAgent) {
+          showToast("Used normal chat fallback for this message.", 1800);
+        }
+        await refreshStatus({ silent: true });
+        return;
+      } catch (recoveryError) {
+        message = recoveryError instanceof Error ? recoveryError.message : String(recoveryError);
+      }
+    }
     state.dashboard.errorCount += 1;
     state.dashboard.lastError = message;
     renderDashboard();
@@ -4154,6 +6632,16 @@ function bindSettingsActions() {
     return;
   }
 
+  const syncManagerTokenInput = () => {
+    if (!managerTokenInput) return false;
+    const token = String(managerTokenInput.value || "").trim();
+    const changed = token !== state.managerApiToken;
+    state.managerApiToken = token;
+    managerTokenInput.value = token;
+    saveStoredManagerToken(token);
+    return changed;
+  };
+
   temperatureRange.addEventListener("input", () => {
     temperatureInput.value = Number.parseFloat(temperatureRange.value).toFixed(2);
   });
@@ -4164,12 +6652,55 @@ function bindSettingsActions() {
     temperatureRange.value = String(value);
   });
 
+  if (serverModeToggle) {
+    serverModeToggle.addEventListener("mouseenter", () => {
+      serverModeToggle.classList.add("hovered");
+    });
+    serverModeToggle.addEventListener("mouseleave", () => {
+      serverModeToggle.classList.remove("hovered");
+    });
+  }
+
+  if (managerTokenInput) {
+    managerTokenInput.addEventListener("change", () => {
+      managerTokenInput.value = String(managerTokenInput.value || "").trim();
+    });
+  }
+
+  if (chatDispatchModeSelect) {
+    chatDispatchModeSelect.addEventListener("change", () => {
+      const nextMode = String(chatDispatchModeSelect.value || "single").trim().toLowerCase();
+      state.settings = normalizeSettings({
+        ...state.settings,
+        chat_dispatch_mode: nextMode,
+      });
+      chatDispatchModeSelect.value = getChatDispatchMode();
+      saveStoredSettings();
+    });
+  }
+
+  if (btnApplyConcurrentModels) {
+    btnApplyConcurrentModels.addEventListener("click", async () => {
+      const selected = readConcurrentModelsSelection();
+      await applyConcurrentModelsSelection(selected);
+    });
+  }
+
+  if (btnClearConcurrentModels) {
+    btnClearConcurrentModels.addEventListener("click", async () => {
+      await applyConcurrentModelsSelection([]);
+    });
+  }
+
   btnSaveSettings.addEventListener("click", async () => {
+    syncManagerTokenInput();
     state.settings = readSettingsFromInputs();
     applySettingsToInputs();
     saveStoredSettings();
+    void pushServerModePreferenceToManager(isServerModeEnabled());
     showToast("Settings saved");
     await refreshStatus();
+    renderConcurrentModelsSettings();
   });
 
   btnResetSettings.addEventListener("click", () => {
@@ -4179,8 +6710,58 @@ function bindSettingsActions() {
     });
     applySettingsToInputs();
     saveStoredSettings();
+    void pushServerModePreferenceToManager(isServerModeEnabled());
     showToast("Settings reset");
+    refreshStatus({ silent: true });
+    renderConcurrentModelsSettings();
   });
+
+  if (systemPromptInput) {
+    const applySystemPromptNow = (showToastHint = false) => {
+      state.settings = {
+        ...state.settings,
+        system_prompt: String(systemPromptInput.value || ""),
+      };
+      saveStoredSettings();
+      if (showToastHint) {
+        showToast(t("System prompt applied"), 1200);
+      }
+    };
+
+    systemPromptInput.addEventListener("input", () => {
+      state.settings = {
+        ...state.settings,
+        system_prompt: String(systemPromptInput.value || ""),
+      };
+      if (systemPromptAutoSaveTimer) {
+        clearTimeout(systemPromptAutoSaveTimer);
+      }
+      systemPromptAutoSaveTimer = window.setTimeout(() => {
+        systemPromptAutoSaveTimer = 0;
+        saveStoredSettings();
+      }, 220);
+    });
+
+    systemPromptInput.addEventListener("blur", () => {
+      if (systemPromptAutoSaveTimer) {
+        clearTimeout(systemPromptAutoSaveTimer);
+        systemPromptAutoSaveTimer = 0;
+      }
+      applySystemPromptNow(false);
+    });
+
+    systemPromptInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
+        return;
+      }
+      event.preventDefault();
+      if (systemPromptAutoSaveTimer) {
+        clearTimeout(systemPromptAutoSaveTimer);
+        systemPromptAutoSaveTimer = 0;
+      }
+      applySystemPromptNow(true);
+    });
+  }
 }
 
 function bindAppSettingsActions() {
@@ -4207,6 +6788,7 @@ function bindAppSettingsActions() {
       localStorage.removeItem(CHAT_ACTIVE_ID_KEY);
       localStorage.removeItem(MODEL_PREF_KEY);
       localStorage.removeItem(LANG_KEY);
+      localStorage.removeItem(MANAGER_TOKEN_KEY);
       showToast("UI storage cleared. Reloading...", 1200);
       window.setTimeout(() => {
         window.location.reload();
@@ -4239,7 +6821,7 @@ async function deleteSelectedLocalModel() {
   showToast(`Deleting ${model}...`, 1400);
 
   try {
-    const response = await fetch("/api/manager/delete-model", {
+    const response = await managerFetch("/api/manager/delete-model", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -4346,7 +6928,7 @@ function bindModelsActions() {
       showToast("Applying runtime options...", 1500);
 
       try {
-        const response = await fetch("/api/manager/runtime-config", {
+        const response = await managerFetch("/api/manager/runtime-config", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -4428,11 +7010,27 @@ function bindHfBindingActions() {
 }
 
 function bindChatActions() {
-  btnSend.addEventListener("click", sendMessage);
+  bindChatCopyAsPlainText();
+  if (btnSend) {
+    btnSend.addEventListener("click", sendMessage);
+  }
+  if (btnNewConversation) {
+    btnNewConversation.addEventListener("click", () => {
+      if (state.sending || state.clearingChat || state.switchingModel) return;
+      startNewConversation({ showNotice: true });
+    });
+  }
 
   if (btnAttachMedia && mediaInput) {
     btnAttachMedia.addEventListener("click", () => {
       if (state.sending || state.clearingChat || state.switchingModel) return;
+      if (state.pendingMedia.length > 0) {
+        state.pendingMedia = [];
+        mediaInput.value = "";
+        renderPendingMedia();
+        showToast("Media attachments cleared", 1400);
+        return;
+      }
       mediaInput.click();
     });
   }
@@ -4446,6 +7044,88 @@ function bindChatActions() {
       }
       renderPendingMedia();
       showToast("Media attachments cleared", 1400);
+    });
+  }
+
+  const handleAgentModeButtonClick = async (mode) => {
+    if (state.sending || state.clearingChat || state.switchingModel) {
+      applyAgentModeButtons(getAgentModeFromSettings(state.settings));
+      return;
+    }
+    const normalized = mode === "hermes" ? "hermes" : (mode === "openclaw" ? "openclaw" : "off");
+    const current = getAgentModeFromButtons();
+    const nextMode = current === normalized ? "off" : normalized;
+    const runtime = nextMode === "hermes" ? "hermes" : (nextMode === "openclaw" ? "openclaw" : "auto");
+    const enabled = nextMode === "openclaw" || nextMode === "hermes";
+
+    if (enabled) {
+      const modelId = String(state.selectedModel || "").trim();
+      if (!modelId) {
+        showToast("No model selected.", 2200);
+        applyAgentModeButtons(getAgentModeFromSettings(state.settings));
+        return;
+      }
+      const runtimeServerUrl = resolveChatServerUrl(modelId);
+      try {
+        const probeResult = await probeAgentRuntimeCompatibility({
+          serverUrl: runtimeServerUrl,
+          modelId,
+          runtime,
+          force: true,
+        });
+        setAgentRuntimeAvailabilityFromProbe({
+          runtime,
+          serverUrl: runtimeServerUrl,
+          modelId,
+          probeResult,
+        });
+        applyAgentRuntimeAvailability();
+        if (!probeResult.ok) {
+          const reason = String(probeResult.reason || `${getAgentRuntimeLabel(runtime)} health check failed`).trim();
+          showToast(`${getAgentRuntimeLabel(runtime)} unavailable: ${reason}`, 3600);
+          applyAgentModeButtons(getAgentModeFromSettings(state.settings));
+          return;
+        }
+      } catch (probeError) {
+        const reason = probeError instanceof Error ? probeError.message : String(probeError);
+        showToast(`${getAgentRuntimeLabel(runtime)} probe failed: ${reason}`, 3600);
+        applyAgentModeButtons(getAgentModeFromSettings(state.settings));
+        return;
+      }
+    }
+
+    applyAgentModeButtons(nextMode);
+    state.settings = normalizeSettings({
+      ...state.settings,
+      openclaw_enabled: enabled,
+      agent_runtime: runtime,
+      agent_mode: nextMode,
+    });
+    saveStoredSettings();
+    if (enabled && runtime === "openclaw") {
+      void warmupOpenClawRuntime();
+    }
+  };
+
+  if (agentModeOpenclawBtn) {
+    agentModeOpenclawBtn.addEventListener("click", () => {
+      void handleAgentModeButtonClick("openclaw");
+    });
+  }
+  if (agentModeHermesBtn) {
+    agentModeHermesBtn.addEventListener("click", () => {
+      void handleAgentModeButtonClick("hermes");
+    });
+  }
+  if (openclawToolProfileSelect) {
+    openclawToolProfileSelect.addEventListener("change", () => {
+      const profile = normalizeOpenclawToolProfile(openclawToolProfileSelect.value);
+      openclawToolProfileSelect.value = profile;
+      state.settings = normalizeSettings({
+        ...state.settings,
+        openclaw_tool_profile: profile,
+      });
+      saveStoredSettings();
     });
   }
 
@@ -4502,50 +7182,63 @@ function bindChatActions() {
     });
   }
 
-  btnClear.addEventListener("click", () => {
-    if (state.sending || state.clearingChat) return;
+  if (btnClear) {
+    btnClear.addEventListener("click", () => {
+      if (state.sending || state.clearingChat) return;
 
-    const rows = Array.from(chatFeed.querySelectorAll(".bubble-row"));
-    if (!rows.length) {
-      state.pendingMedia = [];
-      if (mediaInput) {
-        mediaInput.value = "";
+      const rows = Array.from(chatFeed.querySelectorAll(".bubble-row"));
+      if (!rows.length) {
+        state.pendingMedia = [];
+        if (mediaInput) {
+          mediaInput.value = "";
+        }
+        renderPendingMedia();
+        state.messages = [];
+        syncActiveConversationFromState();
+        persistConversations();
+        renderChat();
+        showToast("Chat cleared", 1400);
+        return;
       }
-      renderPendingMedia();
-      state.messages = [];
-      saveStoredMessages();
-      renderChat();
-      showToast("Chat cleared", 1400);
-      return;
-    }
 
-    state.clearingChat = true;
-    setSending(state.sending);
-
-    rows.forEach((row, index) => {
-      const delay = Math.min(index * 18, 180);
-      row.style.animationDelay = `${delay}ms`;
-      row.classList.add("bubble-row-exit");
-    });
-
-    const clearDelayMs = 280 + Math.min(rows.length * 18, 180);
-    window.setTimeout(() => {
-      state.pendingMedia = [];
-      if (mediaInput) {
-        mediaInput.value = "";
-      }
-      renderPendingMedia();
-      state.messages = [];
-      saveStoredMessages();
-      renderChat();
-      state.clearingChat = false;
+      state.clearingChat = true;
       setSending(state.sending);
-      showToast("Chat cleared", 1400);
-    }, clearDelayMs);
-  });
+
+      rows.forEach((row, index) => {
+        const delay = Math.min(index * 18, 180);
+        row.style.animationDelay = `${delay}ms`;
+        row.classList.add("bubble-row-exit");
+      });
+
+      const clearDelayMs = 280 + Math.min(rows.length * 18, 180);
+      window.setTimeout(() => {
+        state.pendingMedia = [];
+        if (mediaInput) {
+          mediaInput.value = "";
+        }
+        renderPendingMedia();
+        state.messages = [];
+        syncActiveConversationFromState();
+        persistConversations();
+        renderChat();
+        state.clearingChat = false;
+        setSending(state.sending);
+        showToast("Chat cleared", 1400);
+      }, clearDelayMs);
+    });
+  }
 
   btnPing.addEventListener("click", async () => {
     await refreshStatus();
+    if (state.selectedModel) {
+      await refreshAgentRuntimeAvailabilityForModel({
+        modelId: state.selectedModel,
+        serverUrl: resolveChatServerUrl(state.selectedModel),
+        force: true,
+        runtimes: ["openclaw", "hermes"],
+        silent: true,
+      });
+    }
     showToast("Server status refreshed", 1400);
   });
 
@@ -4556,45 +7249,71 @@ function bindChatActions() {
     }
   });
 
+  const onModelPickerChange = async (rawModel) => {
+    if (state.sending || state.clearingChat || state.switchingModel) return;
+
+    const nextModel = String(rawModel || "").trim();
+    if (!nextModel) return;
+
+    const previousModel = state.selectedModel;
+    const previousActiveModel = state.activeModel;
+    const previousDashboardModel = state.dashboard.lastModel;
+    state.selectedModel = nextModel;
+    if (state.models.includes(nextModel)) {
+      state.selectedLocalModel = nextModel;
+    }
+    applyModelSelectValue(nextModel);
+    const serverUrlForPref = normalizeServerUrl(
+      (serverUrlInput ? serverUrlInput.value : state.settings.server_url) || state.settings.server_url,
+    );
+    setModelPrefForServer(serverUrlForPref, nextModel);
+
+    if (
+      state.managerEnabled &&
+      !isParallelDispatchMode() &&
+      nextModel &&
+      nextModel !== state.activeModel
+    ) {
+      const ok = await switchManagedModel(nextModel);
+      if (!ok) {
+        state.selectedModel = previousModel;
+        applyModelSelectValue(previousModel);
+        state.dashboard.lastModel = previousActiveModel || previousModel || previousDashboardModel;
+        renderDashboard();
+        return;
+      }
+      await refreshStatus();
+    }
+
+    state.dashboard.lastModel = state.activeModel || nextModel;
+    renderDashboard();
+    renderModelsList();
+    await refreshAgentRuntimeAvailabilityForModel({
+      modelId: nextModel,
+      serverUrl: resolveChatServerUrl(nextModel),
+      force: false,
+      runtimes: ["openclaw", "hermes"],
+      silent: true,
+    });
+  };
+
   if (modelSelect) {
     modelSelect.addEventListener("change", async () => {
-      if (state.sending || state.clearingChat || state.switchingModel) return;
-
-      const nextModel = (modelSelect.value || "").trim();
-      if (!nextModel) return;
-
-      const previousModel = state.selectedModel;
-      state.selectedModel = nextModel;
-      if (state.models.includes(nextModel)) {
-        state.selectedLocalModel = nextModel;
-      }
-      state.dashboard.lastModel = nextModel;
-      const serverUrlForPref = normalizeServerUrl(
-        serverUrlInput.value || state.settings.server_url,
-      );
-      setModelPrefForServer(serverUrlForPref, nextModel);
-
-      if (
-        state.managerEnabled &&
-        nextModel &&
-        nextModel !== state.activeModel
-      ) {
-        const ok = await switchManagedModel(nextModel);
-        if (!ok) {
-          state.selectedModel = previousModel;
-          renderDashboard();
-          return;
-        }
-        await refreshStatus();
-      }
-
-      renderDashboard();
-      renderModelsList();
+      await onModelPickerChange(modelSelect.value);
+    });
+  }
+  if (composerModelSelect) {
+    composerModelSelect.addEventListener("change", async () => {
+      await onModelPickerChange(composerModelSelect.value);
     });
   }
 }
 
 async function init() {
+  state.managerApiToken = loadStoredManagerToken();
+  syncManagerTokenFromLocation();
+
+  initProximityGlass();
   initSidebar();
   bindChatActions();
   bindSettingsActions();
@@ -4624,10 +7343,18 @@ async function init() {
   try {
     const response = await fetch("/api/config");
     const config = await response.json();
+    state.managerAuthRequired = Boolean(config.manager_auth_required);
     state.defaults = {
       server_url: normalizeServerUrl(config.server_url || state.defaults.server_url),
       max_tokens: Number.isFinite(config.max_tokens) ? clamp(config.max_tokens, 1, 16384) : state.defaults.max_tokens,
       temperature: Number.isFinite(config.temperature) ? clamp(config.temperature, 0, 2) : state.defaults.temperature,
+      server_mode_enabled: true,
+      openclaw_enabled: Boolean(config.openclaw_enabled || config.cypherclaw_enabled),
+      agent_runtime: (String(config.agent_runtime || "auto").trim().toLowerCase() === "hermes")
+        ? "hermes"
+        : (String(config.agent_runtime || "auto").trim().toLowerCase() === "openclaw" ? "openclaw" : "auto"),
+      openclaw_tool_profile: "auto",
+      chat_dispatch_mode: "single",
     };
   } catch {
     // Keep local defaults when server config endpoint is unavailable.
@@ -4638,20 +7365,28 @@ async function init() {
     ...state.defaults,
     system_prompt: "",
   });
+  void pushServerModePreferenceToManager(isServerModeEnabled());
 
-  state.messages = loadStoredMessages();
-  try {
-    localStorage.removeItem(CHAT_SESSIONS_KEY);
-    localStorage.removeItem(CHAT_ACTIVE_ID_KEY);
-  } catch {
-    // Ignore storage errors.
+  const storedConversations = loadStoredConversations();
+  state.conversations = storedConversations.conversations;
+  state.activeConversationId = storedConversations.activeId;
+  const activeConversation = ensureActiveConversation();
+  state.messages = sanitizeStoredMessages(activeConversation.messages);
+
+  if (state.managerAuthRequired && !state.managerApiToken) {
+    showToast(
+      "Manager API token required. Open this page with ?manager_token=<token>.",
+      4200,
+    );
   }
+
   langAnim.from = state.lang;
   langAnim.to = state.lang;
   langAnim.t = 1.0;
   applyLanguage();
 
   renderChat();
+  renderConversationHistory();
   renderPendingMedia();
   renderCommunityJob(null);
   renderCommunityResults();
@@ -4664,8 +7399,20 @@ async function init() {
   setCommunityJobActionButtons(null);
   setModelSelectLoading("(Detecting...)");
   await refreshStatus();
-  await maybeShowFirstRunHfBinding();
-  await refreshManagerRuntimeConfig({ silent: true });
+  if (state.selectedModel) {
+    await refreshAgentRuntimeAvailabilityForModel({
+      modelId: state.selectedModel,
+      serverUrl: resolveChatServerUrl(state.selectedModel),
+      force: false,
+      runtimes: ["openclaw", "hermes"],
+      silent: true,
+    });
+  }
+  if (isServerModeEnabled()) {
+    await maybeShowFirstRunHfBinding();
+    await refreshManagerRuntimeConfig({ silent: true });
+  }
+  applyAgentRuntimeAvailability();
   messageInput.focus();
 }
 

@@ -230,6 +230,8 @@ class CompletionRequest(BaseModel):
 
     model: str
     prompt: str | list[str]
+    # Optional FIM suffix used by IDE edit-prediction clients.
+    suffix: str | None = None
     temperature: float | None = None
     top_p: float | None = None
     max_tokens: int | None = None

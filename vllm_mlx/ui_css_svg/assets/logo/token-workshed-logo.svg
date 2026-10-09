@@ -1,0 +1,69 @@
+<svg width="1680" height="640" viewBox="0 0 1680 640" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="logoTileSheen" x1="120" y1="70" x2="444" y2="540" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.42" stop-color="#FCFCFD"/>
+      <stop offset="1" stop-color="#F5F6F8"/>
+    </linearGradient>
+    <linearGradient id="logoTileGloss" x1="278" y1="58" x2="278" y2="260" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="logoRoofShade" x1="278" y1="162" x2="278" y2="270" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F1F2F5"/>
+    </linearGradient>
+    <linearGradient id="logoBodyShade" x1="278" y1="266" x2="278" y2="470" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F4F5F7"/>
+    </linearGradient>
+    <filter id="logoTileShadow" x="18" y="24" width="520" height="560" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#0F172A" flood-opacity="0.07"/>
+    </filter>
+    <filter id="logoShapeShadow" x="86" y="54" width="388" height="454" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0F172A" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+
+  <rect width="1680" height="640" fill="#FFFFFF"/>
+
+  <g filter="url(#logoTileShadow)">
+    <rect x="54" y="60" width="448" height="448" rx="128" fill="url(#logoTileSheen)"/>
+    <rect x="55" y="61" width="446" height="446" rx="127" stroke="#E4E7EC" stroke-width="2"/>
+    <path d="M100 84H456C477 84 494 101 494 122V212C494 233 477 250 456 250H100C79 250 62 233 62 212V122C62 101 79 84 100 84Z" fill="url(#logoTileGloss)" opacity="0.9"/>
+  </g>
+
+  <ellipse cx="278" cy="420" rx="108" ry="14" fill="#0F172A" fill-opacity="0.06"/>
+
+  <g filter="url(#logoShapeShadow)">
+    <path d="M164 262C154 262 148 250 154 241L225 168C239 154 258 146 278 146C298 146 317 154 331 168L402 241C408 250 402 262 392 262H164Z" fill="url(#logoRoofShade)"/>
+    <path d="M164 262C154 262 148 250 154 241L225 168C239 154 258 146 278 146C298 146 317 154 331 168L402 241C408 250 402 262 392 262H164Z" stroke="#D6DAE1" stroke-width="10" stroke-linejoin="round"/>
+    <path d="M198 228L242 184C252 174 265 169 278 169C291 169 304 174 314 184L358 228" stroke="#343A46" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="170" y="254" width="216" height="172" rx="56" fill="url(#logoBodyShade)"/>
+    <rect x="170" y="254" width="216" height="172" rx="56" stroke="#343A46" stroke-width="11"/>
+    <rect x="184" y="254" width="188" height="20" rx="10" fill="#0F172A" fill-opacity="0.05"/>
+    <rect x="224" y="300" width="66" height="126" rx="28" fill="#FFFFFF"/>
+    <rect x="224" y="300" width="66" height="126" rx="28" stroke="#343A46" stroke-width="11"/>
+    <circle cx="278" cy="360" r="4.5" fill="#343A46"/>
+    <rect x="306" y="282" width="60" height="60" rx="18" fill="#FFFFFF"/>
+    <rect x="306" y="282" width="60" height="60" rx="18" stroke="#343A46" stroke-width="11"/>
+    <path d="M336 294V330" stroke="#343A46" stroke-width="8" stroke-linecap="round"/>
+    <path d="M318 312H354" stroke="#343A46" stroke-width="8" stroke-linecap="round"/>
+    <rect x="206" y="154" width="34" height="62" rx="12" fill="#FFFFFF"/>
+    <rect x="206" y="154" width="34" height="62" rx="12" stroke="#343A46" stroke-width="10"/>
+    <path d="M200 154H246" stroke="#343A46" stroke-width="10" stroke-linecap="round"/>
+    <text x="236" y="148" fill="#6C7B90" fill-opacity="0.62" font-size="6.1" font-family="'SF Mono','JetBrains Mono','Menlo','Monaco',monospace" font-weight="700">0110</text>
+    <text x="243" y="138" fill="#5D6C81" fill-opacity="0.74" font-size="6.6" font-family="'SF Mono','JetBrains Mono','Menlo','Monaco',monospace" font-weight="700">010011</text>
+    <text x="252" y="128" fill="#4F5D71" fill-opacity="0.84" font-size="7.1" font-family="'SF Mono','JetBrains Mono','Menlo','Monaco',monospace" font-weight="700">01101001</text>
+    <text x="270" y="84" fill="#394454" fill-opacity="0.96" font-size="8.8" font-family="'SF Mono','JetBrains Mono','Menlo','Monaco',monospace" font-weight="700">010101100   011010111</text>
+    <text x="252" y="98" fill="#3F4B5D" fill-opacity="0.95" font-size="8.2" font-family="'SF Mono','JetBrains Mono','Menlo','Monaco',monospace" font-weight="700">00101001   01110101   01100011</text>
+    <text x="234" y="112" fill="#455265" fill-opacity="0.94" font-size="8.2" font-family="'SF Mono','JetBrains Mono','Menlo','Monaco',monospace" font-weight="700">01101101  0110101  0111010  011100</text>
+    <text x="222" y="126" fill="#4C5A6D" fill-opacity="0.92" font-size="8.2" font-family="'SF Mono','JetBrains Mono','Menlo','Monaco',monospace" font-weight="700">01101001  0110001  01110001  0110000</text>
+    <text x="230" y="140" fill="#536176" fill-opacity="0.88" font-size="7.7" font-family="'SF Mono','JetBrains Mono','Menlo','Monaco',monospace" font-weight="700">01101111  0010001  0110011  0110101</text>
+    <text x="252" y="154" fill="#607088" fill-opacity="0.8" font-size="7.2" font-family="'SF Mono','JetBrains Mono','Menlo','Monaco',monospace" font-weight="700">0010000  0111000  00100011</text>
+    <text x="278" y="166" fill="#73839A" fill-opacity="0.7" font-size="6.8" font-family="'SF Mono','JetBrains Mono','Menlo','Monaco',monospace" font-weight="700">0111010  0110110</text>
+  </g>
+
+  <text x="596" y="262" fill="#111111" font-size="126" font-family="'SF Pro Display','PingFang SC','Helvetica Neue',Arial,sans-serif" font-weight="620" letter-spacing="1.4">token</text>
+  <text x="596" y="382" fill="#475569" font-size="112" font-family="'SF Pro Display','PingFang SC','Helvetica Neue',Arial,sans-serif" font-weight="560" letter-spacing="1">workshed</text>
+</svg>

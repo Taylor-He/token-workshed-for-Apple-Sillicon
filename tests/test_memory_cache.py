@@ -411,6 +411,21 @@ class TestMemoryAwarePrefixCache:
         # Should not create duplicate
         assert len(small_cache) == initial_len
 
+    def test_upsert_loaded_entry_replaces_existing_without_duplicates(
+        self, small_cache, mock_kv_cache
+    ):
+        tokens = [1, 2, 3]
+        first_entry = _CacheEntry.create(tokens, mock_kv_cache(1000))
+        second_entry = _CacheEntry.create(tokens, mock_kv_cache(2000))
+
+        small_cache._upsert_loaded_entry(first_entry)
+        small_cache._upsert_loaded_entry(second_entry)
+
+        assert len(small_cache._sorted_keys) == 1
+        assert small_cache._sorted_keys[0] == tuple(tokens)
+        assert small_cache._current_memory == second_entry.memory_bytes
+        assert small_cache._entries[tuple(tokens)] is second_entry
+
     def test_max_entries_limit(self, model, mock_kv_cache):
         # Create cache with low entry limit
         config = MemoryCacheConfig(max_memory_mb=100, max_entries=3)

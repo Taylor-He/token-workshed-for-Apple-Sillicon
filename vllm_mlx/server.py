@@ -42,13 +42,16 @@ import asyncio
 import json
 import logging
 import os
+import re
 import secrets
 import tempfile
 import threading
 import time
 import uuid
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import AsyncIterator
+from datetime import datetime, timezone
+from typing import Any
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
@@ -102,8 +105,11 @@ from .api.utils import (
     extract_multimodal_content,
     is_mllm_model,  # noqa: F401
 )
+from .agent_profiles import mutate_desktop_state
 from .engine import BaseEngine, BatchedEngine, GenerationOutput, SimpleEngine
+from .fim import build_fim_prompt, completion_diagnostics, record_completion_diagnostic
 from .tool_parsers import ToolParserManager
+from .version import VLLM_MLX_VERSION
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -157,6 +163,8 @@ _reasoning_parser = None  # ReasoningParser instance when enabled
 _enable_auto_tool_choice: bool = False
 _tool_call_parser: str | None = None  # Parser name: auto, mistral, qwen, llama, hermes
 _tool_parser_instance = None  # Instantiated parser
+_OLLAMA_KEEP_ALIVE_LOCK = threading.Lock()
+_OLLAMA_KEEP_ALIVE_STATE: dict[str, dict[str, Any]] = {}
 
 
 def _load_prefix_cache_from_disk() -> None:
@@ -191,7 +199,7 @@ def _get_cache_dir() -> str:
     """Get cache persistence directory based on model name."""
     # Use global _model_name which is always a string, set during load_model()
     model_name = _model_name if _model_name else "default"
-    logger.info(
+    logger.debug(
         f"[_get_cache_dir] _model_name={_model_name!r} type={type(_model_name)}"
     )
     # Sanitize model name for filesystem
@@ -199,7 +207,7 @@ def _get_cache_dir() -> str:
     cache_dir = os.path.join(
         os.path.expanduser("~"), ".cache", "vllm-mlx", "prefix_cache", safe_name
     )
-    logger.info(f"[_get_cache_dir] cache_dir={cache_dir!r}")
+    logger.debug(f"[_get_cache_dir] cache_dir={cache_dir!r}")
     return cache_dir
 
 
@@ -238,7 +246,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="vllm-mlx API",
     description="OpenAI-compatible API for MLX LLM/MLLM inference on Apple Silicon",
-    version="0.2.1",
+    version=VLLM_MLX_VERSION,
     lifespan=lifespan,
 )
 
@@ -252,8 +260,28 @@ class RateLimiter:
         self.requests_per_minute = requests_per_minute
         self.enabled = enabled
         self.window_size = 60.0  # 1 minute window
-        self._requests: dict[str, list[float]] = defaultdict(list)
+        self._requests: dict[str, deque[float]] = defaultdict(deque)
         self._lock = threading.Lock()
+        self._last_global_cleanup = 0.0
+
+    def _prune_client_requests(
+        self, client_requests: deque[float], window_start: float
+    ) -> None:
+        while client_requests and client_requests[0] <= window_start:
+            client_requests.popleft()
+
+    def _cleanup_stale_clients(self, current_time: float, window_start: float) -> None:
+        if current_time - self._last_global_cleanup < self.window_size:
+            return
+
+        stale_client_ids = [
+            client_id
+            for client_id, client_requests in self._requests.items()
+            if not client_requests or client_requests[-1] <= window_start
+        ]
+        for client_id in stale_client_ids:
+            self._requests.pop(client_id, None)
+        self._last_global_cleanup = current_time
 
     def is_allowed(self, client_id: str) -> tuple[bool, int]:
         """
@@ -265,24 +293,22 @@ class RateLimiter:
         if not self.enabled:
             return True, 0
 
-        current_time = time.time()
+        current_time = time.monotonic()
         window_start = current_time - self.window_size
 
         with self._lock:
-            # Clean old requests outside window
-            self._requests[client_id] = [
-                t for t in self._requests[client_id] if t > window_start
-            ]
+            self._cleanup_stale_clients(current_time, window_start)
+            client_requests = self._requests[client_id]
+            self._prune_client_requests(client_requests, window_start)
 
             # Check rate limit
-            if len(self._requests[client_id]) >= self.requests_per_minute:
+            if len(client_requests) >= self.requests_per_minute:
                 # Calculate retry-after
-                oldest = min(self._requests[client_id])
-                retry_after = int(oldest + self.window_size - current_time) + 1
+                retry_after = int(client_requests[0] + self.window_size - current_time) + 1
                 return False, max(1, retry_after)
 
             # Record this request
-            self._requests[client_id].append(current_time)
+            client_requests.append(current_time)
             return True, 0
 
 
@@ -452,12 +478,36 @@ def load_embedding_model(
         and _embedding_engine is not None
         and _embedding_engine.model_name == model_name
     ):
+        if not _embedding_engine.is_loaded:
+            _embedding_engine.load()
         return
 
     from .embedding import EmbeddingEngine
 
+    if _embedding_engine is not None and _embedding_engine.model_name != model_name:
+        try:
+            _embedding_engine.unload()
+        except Exception as exc:
+            logger.warning(
+                f"Failed to unload embedding model "
+                f"'{_embedding_engine.model_name}': {exc}"
+            )
+
     _embedding_engine = EmbeddingEngine(model_name)
     _embedding_engine.load()
+
+
+def _run_coroutine_sync(coro):
+    """Run a coroutine on a fresh event loop without leaking global loop state."""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:
+            pass
+        loop.close()
 
 
 def load_model(
@@ -503,11 +553,8 @@ def load_model(
     else:
         logger.info(f"Loading model with SimpleEngine: {model_name}")
         _engine = SimpleEngine(model_name=model_name, force_mllm=force_mllm)
-        # Start SimpleEngine synchronously (no background loop)
-        # Use new_event_loop() for Python 3.10+ compatibility (get_event_loop() is deprecated)
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(_engine.start())
+        # Start SimpleEngine synchronously without mutating the global event loop.
+        _run_coroutine_sync(_engine.start())
         model_type = "MLLM" if _engine.is_mllm else "LLM"
         logger.info(f"{model_type} model loaded (simple mode): {model_name}")
 
@@ -770,6 +817,17 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
 # =============================================================================
 # MCP Endpoints
 # =============================================================================
+
+
+@app.get("/api/completion-capabilities", dependencies=[Depends(verify_api_key)])
+async def completion_capabilities() -> dict[str, Any]:
+    """Expose non-secret FIM compatibility diagnostics to the desktop App."""
+    return {
+        "ok": True,
+        "mode": "experimental_reuse_chat_model",
+        "suffix": True,
+        "diagnostics": completion_diagnostics(),
+    }
 
 
 @app.get("/v1/mcp/tools", dependencies=[Depends(verify_api_key)])
@@ -1162,6 +1220,909 @@ async def _wait_with_disconnect(
 # =============================================================================
 
 
+def _ollama_created_at() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _parse_ollama_keep_alive_seconds(value: Any) -> float | None:
+    """
+    Parse Ollama keep_alive values.
+
+    Returns:
+      - 0.0 for immediate unload
+      - positive seconds for timed residency
+      - None for indefinite residency
+    """
+    default_raw = str(os.environ.get("OLLAMA_KEEP_ALIVE", "5m") or "5m").strip()
+    raw_value = default_raw if value is None else value
+
+    if isinstance(raw_value, bool):
+        raw_value = default_raw
+
+    if isinstance(raw_value, (int, float)):
+        numeric = float(raw_value)
+        if numeric == 0:
+            return 0.0
+        if numeric < 0:
+            return None
+        return numeric
+
+    if not isinstance(raw_value, str):
+        raw_value = str(raw_value)
+
+    text = raw_value.strip().lower()
+    if not text:
+        text = default_raw.strip().lower()
+    if text in {"0", "0s", "0m", "0h", "0d"}:
+        return 0.0
+    if text in {"-1", "-1s", "-1m", "-1h", "-1d"}:
+        return None
+
+    match = re.fullmatch(r"(-?\d+(?:\.\d+)?)(ms|s|m|h|d)?", text)
+    if not match:
+        return 300.0
+    magnitude = float(match.group(1))
+    unit = match.group(2) or "s"
+    if magnitude == 0:
+        return 0.0
+    if magnitude < 0:
+        return None
+    factor = {
+        "ms": 0.001,
+        "s": 1.0,
+        "m": 60.0,
+        "h": 3600.0,
+        "d": 86400.0,
+    }.get(unit, 1.0)
+    return max(0.0, magnitude * factor)
+
+
+def _touch_ollama_keep_alive(model_name: str, keep_alive_raw: Any) -> dict[str, Any]:
+    seconds = _parse_ollama_keep_alive_seconds(keep_alive_raw)
+    now = time.time()
+    with _OLLAMA_KEEP_ALIVE_LOCK:
+        if seconds == 0.0:
+            _OLLAMA_KEEP_ALIVE_STATE.pop(model_name, None)
+            return {
+                "resident": False,
+                "expires_at": 0.0,
+                "keep_alive_seconds": 0.0,
+            }
+
+        state = _OLLAMA_KEEP_ALIVE_STATE.get(model_name) or {}
+        loaded_at = float(state.get("loaded_at") or now)
+        expires_at = None if seconds is None else (now + seconds)
+        next_state = {
+            "model": model_name,
+            "loaded_at": loaded_at,
+            "updated_at": now,
+            "expires_at": expires_at,
+            "keep_alive_seconds": seconds,
+        }
+        _OLLAMA_KEEP_ALIVE_STATE[model_name] = next_state
+        return {
+            "resident": True,
+            "expires_at": expires_at or 0.0,
+            "keep_alive_seconds": None if seconds is None else float(seconds),
+        }
+
+
+def _collect_ollama_resident_models() -> list[dict[str, Any]]:
+    now = time.time()
+    with _OLLAMA_KEEP_ALIVE_LOCK:
+        expired = [
+            model
+            for model, state in _OLLAMA_KEEP_ALIVE_STATE.items()
+            if isinstance(state.get("expires_at"), (int, float)) and float(state["expires_at"]) > 0 and float(state["expires_at"]) <= now
+        ]
+        for model in expired:
+            _OLLAMA_KEEP_ALIVE_STATE.pop(model, None)
+
+        entries = list(_OLLAMA_KEEP_ALIVE_STATE.values())
+
+    models: list[dict[str, Any]] = []
+    for entry in entries:
+        model_name = str(entry.get("model") or "").strip()
+        if not model_name:
+            continue
+        expires_at = entry.get("expires_at")
+        expires_at_text = None
+        if isinstance(expires_at, (int, float)) and float(expires_at) > 0:
+            expires_at_text = datetime.fromtimestamp(
+                float(expires_at), tz=timezone.utc
+            ).isoformat().replace("+00:00", "Z")
+        models.append(
+            {
+                "name": model_name,
+                "model": model_name,
+                "size": 0,
+                "size_vram": 0,
+                "digest": "",
+                "expires_at": expires_at_text,
+                "details": {
+                    "family": "vllm-mlx",
+                },
+            }
+        )
+    return models
+
+
+def _get_ollama_context_length() -> int:
+    candidates: list[Any] = []
+    if _engine is not None:
+        for attr in (
+            "max_context_length",
+            "_max_context_length",
+            "context_length",
+            "max_seq_len",
+            "max_seq_length",
+        ):
+            candidates.append(getattr(_engine, attr, None))
+    candidates.append(_default_max_tokens)
+
+    for value in candidates:
+        if isinstance(value, int) and value > 0:
+            return value
+        if isinstance(value, float) and value > 0:
+            return int(value)
+    return 32768
+
+
+async def _iter_sse_data_lines(response: StreamingResponse) -> AsyncIterator[str]:
+    """
+    Parse SSE 'data:' lines from a StreamingResponse body iterator.
+    """
+    buffer = ""
+    async for chunk in response.body_iterator:
+        if isinstance(chunk, bytes):
+            text = chunk.decode("utf-8", errors="ignore")
+        else:
+            text = str(chunk)
+        if not text:
+            continue
+        buffer += text
+        while "\n" in buffer:
+            line, buffer = buffer.split("\n", 1)
+            stripped = line.strip()
+            if not stripped.startswith("data:"):
+                continue
+            yield stripped[5:].strip()
+
+    tail = buffer.strip()
+    if tail.startswith("data:"):
+        yield tail[5:].strip()
+
+
+def _coerce_ollama_tool_arguments(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"_raw": raw}
+        if isinstance(parsed, dict):
+            return parsed
+        return {"_raw": raw}
+    return {}
+
+
+def _convert_ollama_messages_to_openai(messages_raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(messages_raw, list):
+        raise HTTPException(status_code=400, detail="Invalid Ollama payload: 'messages' must be a list.")
+
+    converted: list[dict[str, Any]] = []
+    pending_tool_ids: dict[str, list[str]] = defaultdict(list)
+
+    for msg_index, item in enumerate(messages_raw):
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role", "")).strip().lower()
+        if role not in {"system", "user", "assistant", "tool"}:
+            continue
+
+        content = item.get("content", "")
+        content_text = content if isinstance(content, str) else str(content)
+
+        if role in {"system", "user"}:
+            converted.append({"role": role, "content": content_text})
+            continue
+
+        if role == "assistant":
+            assistant_message: dict[str, Any] = {"role": "assistant", "content": content_text}
+            raw_tool_calls = item.get("tool_calls")
+            tool_calls: list[dict[str, Any]] = []
+            if isinstance(raw_tool_calls, list):
+                for tc_index, tc in enumerate(raw_tool_calls):
+                    if not isinstance(tc, dict):
+                        continue
+                    function = tc.get("function")
+                    if not isinstance(function, dict):
+                        continue
+                    tool_name = str(function.get("name", "")).strip()
+                    if not tool_name:
+                        continue
+                    arguments = _coerce_ollama_tool_arguments(function.get("arguments"))
+                    tool_id = str(tc.get("id", "")).strip() or (
+                        f"call_{msg_index}_{tc_index}_{uuid.uuid4().hex[:8]}"
+                    )
+                    tool_calls.append(
+                        {
+                            "id": tool_id,
+                            "type": "function",
+                            "function": {
+                                "name": tool_name,
+                                "arguments": json.dumps(arguments, ensure_ascii=False),
+                            },
+                        }
+                    )
+                    pending_tool_ids[tool_name].append(tool_id)
+            if tool_calls:
+                assistant_message["tool_calls"] = tool_calls
+            converted.append(assistant_message)
+            continue
+
+        # role == "tool"
+        tool_message: dict[str, Any] = {"role": "tool", "content": content_text}
+        tool_name = str(item.get("tool_name", "")).strip()
+        if tool_name and pending_tool_ids.get(tool_name):
+            tool_message["tool_call_id"] = pending_tool_ids[tool_name].pop(0)
+        converted.append(tool_message)
+
+    return converted
+
+
+def _convert_ollama_tools_to_openai(tools_raw: Any) -> list[dict[str, Any]] | None:
+    if not isinstance(tools_raw, list):
+        return None
+    converted: list[dict[str, Any]] = []
+    for tool in tools_raw:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        if not isinstance(function, dict):
+            continue
+        name = str(function.get("name", "")).strip()
+        if not name:
+            continue
+        parameters = function.get("parameters")
+        converted.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": str(function.get("description", "")).strip(),
+                    "parameters": parameters if isinstance(parameters, dict) else {},
+                },
+            }
+        )
+    return converted or None
+
+
+def _convert_openai_tool_calls_to_ollama(tool_calls_raw: Any) -> list[dict[str, Any]]:
+    converted: list[dict[str, Any]] = []
+    if not isinstance(tool_calls_raw, list):
+        return converted
+
+    for tc in tool_calls_raw:
+        tc_dict: dict[str, Any]
+        if hasattr(tc, "model_dump"):
+            tc_dict = tc.model_dump()
+        elif isinstance(tc, dict):
+            tc_dict = tc
+        else:
+            continue
+        function = tc_dict.get("function")
+        if not isinstance(function, dict):
+            continue
+        tool_name = str(function.get("name", "")).strip()
+        if not tool_name:
+            continue
+        arguments = _coerce_ollama_tool_arguments(function.get("arguments"))
+        converted.append(
+            {
+                "function": {
+                    "name": tool_name,
+                    "arguments": arguments,
+                }
+            }
+        )
+    return converted
+
+
+def _convert_openai_chunk_tool_calls_to_ollama(tool_calls_raw: Any) -> list[dict[str, Any]]:
+    converted: list[dict[str, Any]] = []
+    if not isinstance(tool_calls_raw, list):
+        return converted
+
+    for tc in tool_calls_raw:
+        if not isinstance(tc, dict):
+            continue
+        function = tc.get("function")
+        if not isinstance(function, dict):
+            continue
+        tool_name = str(function.get("name", "")).strip()
+        raw_arguments = function.get("arguments")
+        if not tool_name and raw_arguments in {None, ""}:
+            continue
+        converted.append(
+            {
+                "function": {
+                    "name": tool_name,
+                    "arguments": _coerce_ollama_tool_arguments(raw_arguments),
+                }
+            }
+        )
+    return converted
+
+
+def _openai_finish_reason_to_ollama(reason: str | None) -> str:
+    normalized = str(reason or "").strip().lower()
+    if normalized == "tool_calls":
+        return "tool_calls"
+    if normalized in {"length", "max_tokens"}:
+        return "length"
+    if normalized in {"content_filter"}:
+        return "content_filter"
+    return "stop"
+
+
+def _convert_openai_response_to_ollama_payload(
+    *,
+    openai_response: ChatCompletionResponse,
+    requested_model: str,
+    total_duration_ns: int | None = None,
+    load_duration_ns: int | None = None,
+    prompt_eval_duration_ns: int | None = None,
+    eval_duration_ns: int | None = None,
+) -> dict[str, Any]:
+    choice = openai_response.choices[0] if openai_response.choices else None
+    message = choice.message if choice is not None else None
+    content = ""
+    tool_calls_raw: Any = None
+    finish_reason = "stop"
+    if message is not None:
+        content = str(message.content or "")
+        tool_calls_raw = message.tool_calls
+        reasoning_text = str(message.reasoning or "").strip()
+    else:
+        reasoning_text = ""
+    if choice is not None:
+        finish_reason = _openai_finish_reason_to_ollama(choice.finish_reason)
+
+    response_message: dict[str, Any] = {
+        "role": "assistant",
+        "content": content,
+    }
+    if reasoning_text:
+        response_message["thinking"] = reasoning_text
+    tool_calls = _convert_openai_tool_calls_to_ollama(tool_calls_raw)
+    if tool_calls:
+        response_message["tool_calls"] = tool_calls
+
+    usage = openai_response.usage or Usage()
+    return {
+        "model": requested_model,
+        "created_at": _ollama_created_at(),
+        "message": response_message,
+        "done": True,
+        "done_reason": finish_reason,
+        "total_duration": int(total_duration_ns or 0),
+        "load_duration": int(load_duration_ns or 0),
+        "prompt_eval_duration": int(prompt_eval_duration_ns or 0),
+        "eval_duration": int(eval_duration_ns or 0),
+        "prompt_eval_count": int(usage.prompt_tokens or 0),
+        "eval_count": int(usage.completion_tokens or 0),
+    }
+
+
+def _promote_content_tool_calls_for_ollama_compat(
+    response: ChatCompletionResponse,
+) -> ChatCompletionResponse:
+    """
+    Best-effort salvage: if parser didn't emit structured tool_calls but content
+    still contains tool markup, run generic parser once and promote tool_calls.
+    """
+    if not response.choices:
+        return response
+
+    choice = response.choices[0]
+    message = choice.message
+    if message is None:
+        return response
+    if message.tool_calls:
+        return response
+
+    raw_content = str(message.content or "")
+    if not raw_content.strip():
+        return response
+
+    marker_hit = (
+        "<tool_call" in raw_content.lower()
+        or "[calling tool:" in raw_content.lower()
+        or "<function=" in raw_content.lower()
+    )
+    if not marker_hit:
+        return response
+
+    cleaned_text, parsed_tool_calls = parse_tool_calls(raw_content, None)
+    if not parsed_tool_calls:
+        return response
+
+    message.tool_calls = parsed_tool_calls
+    message.content = clean_output_text(cleaned_text) if cleaned_text else None
+    choice.finish_reason = "tool_calls"
+    return response
+
+
+@app.get("/api/tags")
+async def ollama_tags() -> dict[str, Any]:
+    model_name = str(_model_name or "default").strip() or "default"
+    return {
+        "models": [
+            {
+                "name": model_name,
+                "model": model_name,
+                "modified_at": _ollama_created_at(),
+                "size": 0,
+                "digest": "",
+                "details": {
+                    "family": "vllm-mlx",
+                },
+            }
+        ]
+    }
+
+
+@app.get("/api/ps", dependencies=[Depends(verify_api_key)])
+async def ollama_ps() -> dict[str, Any]:
+    """Ollama-compatible loaded model listing."""
+    models = _collect_ollama_resident_models()
+    if not models:
+        model_name = str(_model_name or "default").strip() or "default"
+        models = [
+            {
+                "name": model_name,
+                "model": model_name,
+                "size": 0,
+                "size_vram": 0,
+                "digest": "",
+                "expires_at": None,
+                "details": {"family": "vllm-mlx"},
+            }
+        ]
+    return {"models": models}
+
+
+@app.get("/api/version")
+async def ollama_version() -> dict[str, Any]:
+    return {"version": VLLM_MLX_VERSION}
+
+
+@app.post("/api/show", dependencies=[Depends(verify_api_key)])
+async def ollama_show(raw_request: Request) -> dict[str, Any]:
+    """Ollama-compatible model metadata endpoint."""
+    try:
+        body = await raw_request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    requested_model = str(
+        body.get("name")
+        or body.get("model")
+        or _model_name
+        or "default"
+    ).strip() or "default"
+    context_length = _get_ollama_context_length()
+
+    return {
+        "modelfile": "",
+        "parameters": f"num_ctx {context_length}",
+        "template": "{{ .Prompt }}",
+        "details": {
+            "family": "vllm-mlx",
+            "parameter_size": "unknown",
+            "quantization_level": "unknown",
+        },
+        "model_info": {
+            "general.architecture": "vllm-mlx",
+            "general.name": requested_model,
+            "llama.context_length": context_length,
+        },
+        "capabilities": ["completion", "chat", "tools"],
+    }
+
+
+@app.post("/api/chat", dependencies=[Depends(verify_api_key), Depends(check_rate_limit)])
+async def ollama_chat_completion(raw_request: Request):
+    """Ollama-compatible /api/chat endpoint backed by vllm-mlx chat/completions."""
+    try:
+        body = await raw_request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON payload: {exc}") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Invalid Ollama payload: expected JSON object.")
+
+    requested_model = str(body.get("model") or _model_name or "default").strip() or "default"
+    stream_requested = bool(body.get("stream", False))
+    options = body.get("options")
+    options_dict = options if isinstance(options, dict) else {}
+    keep_alive_raw = body.get("keep_alive", None)
+    keep_alive_state = _touch_ollama_keep_alive(requested_model, keep_alive_raw)
+
+    max_tokens = options_dict.get("num_predict")
+    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int):
+        max_tokens = None
+    elif max_tokens <= 0:
+        max_tokens = None
+
+    temperature = options_dict.get("temperature")
+    if isinstance(temperature, bool) or not isinstance(temperature, (int, float)):
+        temperature = None
+    else:
+        temperature = float(temperature)
+
+    top_p = options_dict.get("top_p")
+    if isinstance(top_p, bool) or not isinstance(top_p, (int, float)):
+        top_p = None
+    else:
+        top_p = float(top_p)
+
+    messages_raw = body.get("messages")
+    if messages_raw is None:
+        messages_raw = []
+    openai_messages = _convert_ollama_messages_to_openai(messages_raw)
+    if not openai_messages:
+        if keep_alive_state.get("resident", False):
+            warmup_request = ChatCompletionRequest(
+                model=requested_model,
+                messages=[{"role": "user", "content": "warmup"}],
+                temperature=0.0,
+                top_p=1.0,
+                max_tokens=1,
+                stream=False,
+            )
+            try:
+                await create_chat_completion(warmup_request, raw_request)
+            except Exception:
+                # Keep preload best-effort semantics.
+                pass
+        return {
+            "model": requested_model,
+            "created_at": _ollama_created_at(),
+            "message": {"role": "assistant", "content": ""},
+            "done": True,
+            "done_reason": "stop",
+            "total_duration": 0,
+            "load_duration": 0,
+            "prompt_eval_duration": 0,
+            "eval_duration": 0,
+            "prompt_eval_count": 0,
+            "eval_count": 0,
+        }
+
+    openai_tools = _convert_ollama_tools_to_openai(body.get("tools"))
+    stream_options = {"include_usage": True} if stream_requested else None
+    openai_request = ChatCompletionRequest(
+        model=requested_model,
+        messages=openai_messages,
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
+        stream=stream_requested,
+        stream_options=stream_options,
+        tools=openai_tools,
+    )
+    if body.get("tool_choice") is not None:
+        openai_request.tool_choice = body.get("tool_choice")
+
+    request_start = time.perf_counter_ns()
+    openai_response = await create_chat_completion(openai_request, raw_request)
+    if stream_requested:
+        if not isinstance(openai_response, StreamingResponse):
+            raise HTTPException(
+                status_code=502,
+                detail="Unexpected non-stream response from vllm-mlx backend.",
+            )
+
+        async def _stream_ollama_chat() -> AsyncIterator[str]:
+            accumulated_content = ""
+            accumulated_thinking = ""
+            finish_reason = "stop"
+            prompt_tokens = 0
+            completion_tokens = 0
+            total_tokens = 0
+            completed_tool_calls: list[dict[str, Any]] = []
+
+            async for payload_line in _iter_sse_data_lines(openai_response):
+                if not payload_line:
+                    continue
+                if payload_line == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(payload_line)
+                except json.JSONDecodeError:
+                    continue
+
+                if isinstance(chunk, dict):
+                    usage = chunk.get("usage")
+                    if isinstance(usage, dict):
+                        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+                        completion_tokens = int(usage.get("completion_tokens") or 0)
+                        total_tokens = int(
+                            usage.get("total_tokens")
+                            or (prompt_tokens + completion_tokens)
+                        )
+
+                choices = chunk.get("choices") if isinstance(chunk, dict) else None
+                if not isinstance(choices, list) or not choices:
+                    continue
+                first = choices[0] if isinstance(choices[0], dict) else {}
+                delta = first.get("delta") if isinstance(first, dict) else {}
+                if not isinstance(delta, dict):
+                    delta = {}
+
+                finish_candidate = first.get("finish_reason")
+                if isinstance(finish_candidate, str) and finish_candidate.strip():
+                    finish_reason = _openai_finish_reason_to_ollama(finish_candidate)
+
+                delta_content = str(delta.get("content") or "")
+                delta_reasoning = str(
+                    delta.get("reasoning")
+                    or delta.get("reasoning_content")
+                    or ""
+                )
+                delta_tool_calls = _convert_openai_chunk_tool_calls_to_ollama(
+                    delta.get("tool_calls")
+                )
+
+                if delta_content:
+                    accumulated_content += delta_content
+                if delta_reasoning:
+                    accumulated_thinking += delta_reasoning
+                if delta_tool_calls:
+                    completed_tool_calls.extend(delta_tool_calls)
+
+                if not delta_content and not delta_reasoning and not delta_tool_calls:
+                    continue
+
+                message_payload: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": delta_content,
+                }
+                if delta_reasoning:
+                    message_payload["thinking"] = delta_reasoning
+                if delta_tool_calls:
+                    message_payload["tool_calls"] = delta_tool_calls
+
+                yield json.dumps(
+                    {
+                        "model": requested_model,
+                        "created_at": _ollama_created_at(),
+                        "message": message_payload,
+                        "done": False,
+                    },
+                    ensure_ascii=False,
+                ) + "\n"
+
+            final_message: dict[str, Any] = {
+                "role": "assistant",
+                "content": "",
+            }
+            if accumulated_thinking:
+                final_message["thinking"] = accumulated_thinking
+            if completed_tool_calls:
+                final_message["tool_calls"] = completed_tool_calls
+
+            total_duration_ns = int(max(0, time.perf_counter_ns() - request_start))
+            yield json.dumps(
+                {
+                    "model": requested_model,
+                    "created_at": _ollama_created_at(),
+                    "message": final_message,
+                    "done": True,
+                    "done_reason": finish_reason,
+                    "total_duration": total_duration_ns,
+                    "load_duration": 0,
+                    "prompt_eval_duration": 0,
+                    "eval_duration": 0,
+                    "prompt_eval_count": int(prompt_tokens),
+                    "eval_count": int(completion_tokens),
+                },
+                ensure_ascii=False,
+            ) + "\n"
+
+        return StreamingResponse(_stream_ollama_chat(), media_type="application/x-ndjson")
+
+    if isinstance(openai_response, Response) and not isinstance(
+        openai_response, ChatCompletionResponse
+    ):
+        return openai_response
+    if not isinstance(openai_response, ChatCompletionResponse):
+        raise HTTPException(status_code=502, detail="Unexpected response from vllm-mlx backend.")
+    openai_response = _promote_content_tool_calls_for_ollama_compat(openai_response)
+    elapsed_ns = int(max(0, time.perf_counter_ns() - request_start))
+    return _convert_openai_response_to_ollama_payload(
+        openai_response=openai_response,
+        requested_model=requested_model,
+        total_duration_ns=elapsed_ns,
+    )
+
+
+@app.post("/api/generate", dependencies=[Depends(verify_api_key), Depends(check_rate_limit)])
+async def ollama_generate(raw_request: Request):
+    """Ollama-compatible /api/generate endpoint backed by /v1/completions."""
+    try:
+        body = await raw_request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON payload: {exc}") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Invalid Ollama payload: expected JSON object.")
+
+    requested_model = str(body.get("model") or _model_name or "default").strip() or "default"
+    stream_requested = bool(body.get("stream", False))
+    options = body.get("options")
+    options_dict = options if isinstance(options, dict) else {}
+    keep_alive_raw = body.get("keep_alive", None)
+    keep_alive_state = _touch_ollama_keep_alive(requested_model, keep_alive_raw)
+
+    prompt_raw = body.get("prompt", "")
+    prompt = prompt_raw if isinstance(prompt_raw, str) else str(prompt_raw)
+
+    max_tokens = options_dict.get("num_predict")
+    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int):
+        max_tokens = None
+    elif max_tokens <= 0:
+        max_tokens = None
+
+    temperature = options_dict.get("temperature")
+    if isinstance(temperature, bool) or not isinstance(temperature, (int, float)):
+        temperature = None
+    else:
+        temperature = float(temperature)
+
+    top_p = options_dict.get("top_p")
+    if isinstance(top_p, bool) or not isinstance(top_p, (int, float)):
+        top_p = None
+    else:
+        top_p = float(top_p)
+
+    if not prompt.strip():
+        if keep_alive_state.get("resident", False):
+            warmup_request = CompletionRequest(
+                model=requested_model,
+                prompt="warmup",
+                temperature=0.0,
+                top_p=1.0,
+                max_tokens=1,
+                stream=False,
+            )
+            try:
+                await create_completion(warmup_request, raw_request)
+            except Exception:
+                pass
+        return {
+            "model": requested_model,
+            "created_at": _ollama_created_at(),
+            "response": "",
+            "done": True,
+            "done_reason": "stop",
+            "total_duration": 0,
+            "load_duration": 0,
+            "prompt_eval_duration": 0,
+            "eval_duration": 0,
+            "prompt_eval_count": 0,
+            "eval_count": 0,
+        }
+
+    completion_request = CompletionRequest(
+        model=requested_model,
+        prompt=prompt,
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
+        stream=stream_requested,
+    )
+    request_start = time.perf_counter_ns()
+    completion_response = await create_completion(completion_request, raw_request)
+
+    if stream_requested:
+        if not isinstance(completion_response, StreamingResponse):
+            raise HTTPException(
+                status_code=502,
+                detail="Unexpected non-stream response from vllm-mlx backend.",
+            )
+
+        async def _stream_ollama_generate() -> AsyncIterator[str]:
+            finish_reason = "stop"
+            prompt_tokens = 0
+            completion_tokens = 0
+
+            async for payload_line in _iter_sse_data_lines(completion_response):
+                if not payload_line:
+                    continue
+                if payload_line == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(payload_line)
+                except json.JSONDecodeError:
+                    continue
+
+                choices = chunk.get("choices") if isinstance(chunk, dict) else None
+                delta_text = ""
+                if isinstance(choices, list) and choices:
+                    first = choices[0] if isinstance(choices[0], dict) else {}
+                    delta_text = str(first.get("text") or "")
+                    finish_candidate = first.get("finish_reason")
+                    if isinstance(finish_candidate, str) and finish_candidate.strip():
+                        finish_reason = _openai_finish_reason_to_ollama(finish_candidate)
+
+                usage = chunk.get("usage") if isinstance(chunk, dict) else None
+                if isinstance(usage, dict):
+                    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+                    completion_tokens = int(usage.get("completion_tokens") or 0)
+
+                if delta_text:
+                    yield json.dumps(
+                        {
+                            "model": requested_model,
+                            "created_at": _ollama_created_at(),
+                            "response": delta_text,
+                            "done": False,
+                        },
+                        ensure_ascii=False,
+                    ) + "\n"
+
+            total_duration_ns = int(max(0, time.perf_counter_ns() - request_start))
+            yield json.dumps(
+                {
+                    "model": requested_model,
+                    "created_at": _ollama_created_at(),
+                    "response": "",
+                    "done": True,
+                    "done_reason": finish_reason,
+                    "total_duration": total_duration_ns,
+                    "load_duration": 0,
+                    "prompt_eval_duration": 0,
+                    "eval_duration": 0,
+                    "prompt_eval_count": int(prompt_tokens),
+                    "eval_count": int(completion_tokens),
+                },
+                ensure_ascii=False,
+            ) + "\n"
+
+        return StreamingResponse(_stream_ollama_generate(), media_type="application/x-ndjson")
+
+    if isinstance(completion_response, Response) and not hasattr(
+        completion_response, "choices"
+    ):
+        return completion_response
+    if not isinstance(completion_response, CompletionResponse):
+        raise HTTPException(status_code=502, detail="Unexpected response from vllm-mlx backend.")
+
+    choice = completion_response.choices[0] if completion_response.choices else None
+    usage = completion_response.usage or Usage()
+    elapsed_ns = int(max(0, time.perf_counter_ns() - request_start))
+    return {
+        "model": requested_model,
+        "created_at": _ollama_created_at(),
+        "response": str(choice.text if choice is not None else ""),
+        "done": True,
+        "done_reason": _openai_finish_reason_to_ollama(choice.finish_reason if choice is not None else "stop"),
+        "total_duration": elapsed_ns,
+        "load_duration": 0,
+        "prompt_eval_duration": 0,
+        "eval_duration": 0,
+        "prompt_eval_count": int(usage.prompt_tokens or 0),
+        "eval_count": int(usage.completion_tokens or 0),
+    }
+
+
 @app.post(
     "/v1/completions", dependencies=[Depends(verify_api_key), Depends(check_rate_limit)]
 )
@@ -1169,12 +2130,56 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     """Create a text completion."""
     engine = get_engine()
 
-    # Handle single prompt or list of prompts
+    # Handle single prompt or list of prompts. JetBrains sends ``suffix`` for
+    # edit prediction; render it before entering the normal engine path so
+    # streaming and non-streaming requests have identical semantics.
     prompts = request.prompt if isinstance(request.prompt, list) else [request.prompt]
+    rendered_prompts: list[str] = []
+    for prompt in prompts:
+        if request.suffix is None:
+            rendered_prompts.append(prompt)
+            continue
+        fim_prompt = build_fim_prompt(
+            prompt,
+            request.suffix,
+            getattr(engine, "tokenizer", None),
+        )
+        diagnostic = record_completion_diagnostic(
+            request.model,
+            suffix_requested=True,
+            fim_prompt=fim_prompt,
+        )
+        # The model server is a child of the desktop App. Keep a bounded
+        # diagnostic copy in the shared 0600 state so the App settings page
+        # can report whether the current model used native FIM or fallback.
+        def store_completion_diagnostic(
+            state: dict[str, Any], diagnostic_record: dict[str, Any] = diagnostic
+        ) -> bool:
+            integration = state.get("jetbrains_integration")
+            if not isinstance(integration, dict):
+                integration = {}
+            records = integration.get("completion_diagnostics")
+            if not isinstance(records, list):
+                records = []
+            records = [
+                item for item in records
+                if isinstance(item, dict)
+                and item.get("model") != diagnostic_record.get("model")
+            ]
+            records.append(diagnostic_record)
+            integration["completion_diagnostics"] = records[-128:]
+            state["jetbrains_integration"] = integration
+            return True
+
+        try:
+            mutate_desktop_state(store_completion_diagnostic)
+        except Exception:
+            logger.debug("Could not persist JetBrains completion diagnostic", exc_info=True)
+        rendered_prompts.append(fim_prompt.prompt)
 
     # --- Detailed request logging ---
     prompt_preview = prompts[0][:200] if prompts else "(empty)"
-    prompt_len = sum(len(p) for p in prompts)
+    prompt_len = sum(len(p) for p in rendered_prompts)
     logger.info(
         f"[REQUEST] POST /v1/completions stream={request.stream} "
         f"max_tokens={request.max_tokens} temp={request.temperature} "
@@ -1184,7 +2189,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     if request.stream:
         return StreamingResponse(
             _disconnect_guard(
-                stream_completion(engine, prompts[0], request),
+                stream_completion(engine, rendered_prompts[0], request),
                 raw_request,
             ),
             media_type="text/event-stream",
@@ -1197,7 +2202,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     total_completion_tokens = 0
     total_prompt_tokens = 0
 
-    for i, prompt in enumerate(prompts):
+    for i, prompt in enumerate(rendered_prompts):
         output = await _wait_with_disconnect(
             engine.generate(
                 prompt=prompt,
@@ -1922,7 +2927,12 @@ async def stream_chat_completion(
         if hasattr(output, "completion_tokens") and output.completion_tokens:
             completion_tokens = output.completion_tokens
 
-        # Use reasoning parser if enabled
+        reasoning = None
+
+        # Split reasoning first, then pass only visible content through the
+        # tool parser. OpenClaw and Hermes both use streaming completions, so
+        # bypassing tool parsing here would turn valid Qwen tool calls into
+        # literal assistant text whenever a reasoning parser is enabled.
         if _reasoning_parser and delta_text:
             previous_text = accumulated_text
             accumulated_text += delta_text
@@ -1933,109 +2943,125 @@ async def stream_chat_completion(
             if delta_msg is None:
                 # Skip this chunk (e.g., <think> token itself)
                 continue
-
-            chunk = ChatCompletionChunk(
-                id=response_id,
-                model=request.model,
-                choices=[
-                    ChatCompletionChunkChoice(
-                        delta=ChatCompletionChunkDelta(
-                            content=delta_msg.content,
-                            reasoning=delta_msg.reasoning,
-                        ),
-                        finish_reason=output.finish_reason if output.finished else None,
-                    )
-                ],
-                usage=get_usage(output) if output.finished else None,
-            )
-            yield f"data: {chunk.model_dump_json()}\n\n"
+            content = delta_msg.content
+            reasoning = delta_msg.reasoning
         else:
             # Standard path without reasoning parsing
             content = delta_text
-
-            # Filter special tokens that may leak into streaming output
-            if content:
-                content = SPECIAL_TOKENS_PATTERN.sub("", content)
 
             # Add <think> prefix on first content chunk for thinking models
             if is_thinking_model and not think_prefix_sent and content:
                 content = "<think>" + content
                 think_prefix_sent = True
 
-            # Tool call streaming parsing
-            if tool_parser and delta_text:
-                # Fast path: skip full parsing until '<' is seen in the stream,
-                # which could start tool markup (e.g. <tool_call>). This avoids
-                # per-token string scanning on the growing accumulated text.
-                if not tool_markup_possible and "<" not in delta_text:
-                    tool_accumulated_text += delta_text
-                    # No tool markup yet, fall through to normal chunk emission
-                else:
-                    if not tool_markup_possible:
-                        tool_markup_possible = True
-                    tool_previous = tool_accumulated_text
-                    tool_accumulated_text += delta_text
-                    tool_result = tool_parser.extract_tool_calls_streaming(
-                        tool_previous, tool_accumulated_text, delta_text
-                    )
+        # Filter special tokens that may leak into reasoning-parser content.
+        if content:
+            content = SPECIAL_TOKENS_PATTERN.sub("", content)
 
-                    if tool_result is None:
-                        # Inside tool markup - suppress output
-                        continue
+        # Tool call streaming parsing. Feed the parser visible content rather
+        # than raw reasoning tokens, while preserving reasoning as its own
+        # OpenAI-compatible delta.
+        tool_delta_text = content or ""
+        if tool_parser and tool_delta_text:
+            # Qwen supports both <tool_call> and [Calling tool: ...] formats.
+            # Once a possible marker begins, keep parsing the accumulated text
+            # until the call is complete.
+            if (
+                not tool_markup_possible
+                and "<" not in tool_delta_text
+                and "[" not in tool_delta_text
+            ):
+                tool_accumulated_text += tool_delta_text
+                # No tool markup yet, fall through to normal chunk emission.
+            else:
+                if not tool_markup_possible:
+                    tool_markup_possible = True
+                tool_previous = tool_accumulated_text
+                tool_accumulated_text += tool_delta_text
+                tool_result = tool_parser.extract_tool_calls_streaming(
+                    tool_previous, tool_accumulated_text, tool_delta_text
+                )
 
-                    if "tool_calls" in tool_result:
-                        # Emit structured tool calls
-                        tool_calls_detected = True
+                if tool_result is None:
+                    # Inside tool markup: suppress content, but do not drop a
+                    # reasoning delta that happened to share this chunk.
+                    if reasoning:
                         chunk = ChatCompletionChunk(
                             id=response_id,
                             model=request.model,
                             choices=[
                                 ChatCompletionChunkChoice(
-                                    delta=ChatCompletionChunkDelta(
-                                        tool_calls=tool_result["tool_calls"]
-                                    ),
-                                    finish_reason=(
-                                        "tool_calls" if output.finished else None
-                                    ),
+                                    delta=ChatCompletionChunkDelta(reasoning=reasoning),
+                                    finish_reason=None,
                                 )
                             ],
-                            usage=get_usage(output) if output.finished else None,
                         )
                         yield f"data: {chunk.model_dump_json()}\n\n"
-                        continue
+                    continue
 
-                    # Normal content from tool parser
-                    content = tool_result.get("content", "")
-
-            chunk = ChatCompletionChunk(
-                id=response_id,
-                model=request.model,
-                choices=[
-                    ChatCompletionChunkChoice(
-                        delta=ChatCompletionChunkDelta(
-                            content=content if content else None
-                        ),
-                        finish_reason=(
-                            "tool_calls"
-                            if (output.finished and tool_calls_detected)
-                            else (output.finish_reason if output.finished else None)
-                        ),
+                if "tool_calls" in tool_result:
+                    # Emit structured tool calls.
+                    tool_calls_detected = True
+                    chunk = ChatCompletionChunk(
+                        id=response_id,
+                        model=request.model,
+                        choices=[
+                            ChatCompletionChunkChoice(
+                                delta=ChatCompletionChunkDelta(
+                                    reasoning=reasoning,
+                                    tool_calls=tool_result["tool_calls"],
+                                ),
+                                finish_reason=(
+                                    "tool_calls" if output.finished else None
+                                ),
+                            )
+                        ],
+                        usage=get_usage(output) if output.finished else None,
                     )
-                ],
-                usage=get_usage(output) if output.finished else None,
-            )
-            yield f"data: {chunk.model_dump_json()}\n\n"
+                    yield f"data: {chunk.model_dump_json()}\n\n"
+                    continue
 
-    # Fallback: if tool parser accumulated text but never emitted tool_calls
-    # (e.g., </tool_call> never arrived - incomplete tool call)
+                # Normal content from tool parser.
+                content = tool_result.get("content", "")
+
+        chunk = ChatCompletionChunk(
+            id=response_id,
+            model=request.model,
+            choices=[
+                ChatCompletionChunkChoice(
+                    delta=ChatCompletionChunkDelta(
+                        content=content if content else None,
+                        reasoning=reasoning,
+                    ),
+                    finish_reason=(
+                        "tool_calls"
+                        if (output.finished and tool_calls_detected)
+                        else (output.finish_reason if output.finished else None)
+                    ),
+                )
+            ],
+            usage=get_usage(output) if output.finished else None,
+        )
+        yield f"data: {chunk.model_dump_json()}\n\n"
+
+    # Fallback: the model-specific streaming parser may not support every
+    # format accepted by the complete-response parser. Qwen 3.5, for example,
+    # emits <function=...><parameter=...> XML. Reuse the same generic fallback
+    # as non-streaming completions once the complete markup is available.
     if (
         tool_parser
         and tool_accumulated_text
         and not tool_calls_detected
-        and "<tool_call>" in tool_accumulated_text
+        and (
+            "<tool_call>" in tool_accumulated_text
+            or "<function=" in tool_accumulated_text
+            or "[Calling tool:" in tool_accumulated_text
+        )
     ):
-        result = tool_parser.extract_tool_calls(tool_accumulated_text)
-        if result.tools_called:
+        _, fallback_tool_calls = _parse_tool_calls_with_parser(
+            tool_accumulated_text, request
+        )
+        if fallback_tool_calls:
             tool_chunk = ChatCompletionChunk(
                 id=response_id,
                 model=request.model,
@@ -2045,14 +3071,14 @@ async def stream_chat_completion(
                             tool_calls=[
                                 {
                                     "index": i,
-                                    "id": tc["id"],
-                                    "type": "function",
+                                    "id": tc.id,
+                                    "type": tc.type,
                                     "function": {
-                                        "name": tc["name"],
-                                        "arguments": tc["arguments"],
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments,
                                     },
                                 }
-                                for i, tc in enumerate(result.tool_calls)
+                                for i, tc in enumerate(fallback_tool_calls)
                             ]
                         ),
                         finish_reason="tool_calls",

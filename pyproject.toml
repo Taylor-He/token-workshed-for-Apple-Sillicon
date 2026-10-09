@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vllm-mlx"
-version = "0.2.6"
+version = "0.4.0"
 description = "vLLM-like inference for Apple Silicon - GPU-accelerated Text, Image, Video & Audio on Mac"
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -70,6 +70,9 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.0.0",
 ]
+ide = [
+    "agent-client-protocol>=0.12.0,<0.13.0",
+]
 vllm = [
     "vllm>=0.4.0",
 ]
@@ -114,13 +117,13 @@ vllm-mlx-desktop = "vllm_mlx.desktop_ui:main"
 vllm-mlx-bench = "vllm_mlx.benchmark:main"
 token-workshed-ui = "vllm_mlx.css_svg_ui:main"
 token-workshed-desktop = "vllm_mlx.desktop_ui:main"
+token-workshed-quant-worker = "vllm_mlx.quant_worker:main"
+token-workshed-acp = "vllm_mlx.acp_adapter:main"
+token-workshed-mcp = "vllm_mlx.mcp_gateway:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["vllm_mlx*"]
-
-[tool.setuptools.package-data]
-"vllm_mlx.ui_css_svg" = ["*.html", "*.css", "*.js"]
 
 [tool.black]
 line-length = 88

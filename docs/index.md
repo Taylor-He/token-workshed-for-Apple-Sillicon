@@ -55,6 +55,10 @@ vllm-mlx brings native Apple Silicon GPU acceleration to vLLM by integrating:
 - [Architecture](development/architecture.md)
 - [Contributing](development/contributing.md)
 
+### Integrations
+- [JetBrains IDE Bridge v1](IDE_BRIDGE_V1.md)
+- [JetBrains IDE Bridge v2](IDE_BRIDGE_V2.md)
+
 ## Requirements
 
 - macOS on Apple Silicon (M1/M2/M3/M4)

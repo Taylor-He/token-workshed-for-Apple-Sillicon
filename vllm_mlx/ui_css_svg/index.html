@@ -42,6 +42,20 @@
           <circle cx="8" cy="12.1" r="0.85"></circle>
           <circle cx="8" cy="17.6" r="0.85"></circle>
         </svg>
+        <svg class="pill-icon pill-server" viewBox="0 0 24 24">
+          <rect x="3.5" y="4.5" width="17" height="4.4" rx="1.2"></rect>
+          <rect x="3.5" y="10" width="17" height="4.4" rx="1.2"></rect>
+          <path d="M14.8 17.8a2.8 2.8 0 1 0 5.6 0 2.8 2.8 0 0 0-5.6 0Z"></path>
+          <path d="M17.6 15.5v2.3"></path>
+          <path d="M17.6 17.8h1.3"></path>
+          <circle cx="8" cy="6.7" r="0.85"></circle>
+          <circle cx="8" cy="12.2" r="0.85"></circle>
+        </svg>
+        <svg class="pill-icon pill-prompt" viewBox="0 0 24 24">
+          <rect x="3.5" y="4.5" width="17" height="15" rx="2.2"></rect>
+          <path d="M7.2 9.4 10.1 12l-2.9 2.6"></path>
+          <path d="M12.4 14.6h4.2"></path>
+        </svg>
         <svg class="pill-icon pill-community" viewBox="0 0 24 24">
           <circle cx="12" cy="12" r="6.6"></circle>
           <circle cx="9.2" cy="10.7" r="0.7"></circle>
@@ -79,6 +93,26 @@
           <circle cx="8" cy="6.6" r="0.85"></circle>
           <circle cx="8" cy="12.1" r="0.85"></circle>
           <circle cx="8" cy="17.6" r="0.85"></circle>
+        </svg>
+      </button>
+
+      <button class="side-btn" type="button" data-page="server" data-mode="server" aria-label="Server Settings">
+        <svg class="side-icon side-icon-server" viewBox="0 0 24 24">
+          <rect x="3.5" y="4.5" width="17" height="4.4" rx="1.2"></rect>
+          <rect x="3.5" y="10" width="17" height="4.4" rx="1.2"></rect>
+          <path d="M14.8 17.8a2.8 2.8 0 1 0 5.6 0 2.8 2.8 0 0 0-5.6 0Z"></path>
+          <path d="M17.6 15.5v2.3"></path>
+          <path d="M17.6 17.8h1.3"></path>
+          <circle cx="8" cy="6.7" r="0.85"></circle>
+          <circle cx="8" cy="12.2" r="0.85"></circle>
+        </svg>
+      </button>
+
+      <button class="side-btn" type="button" data-page="prompt" data-mode="prompt" aria-label="System Prompt">
+        <svg class="side-icon side-icon-prompt" viewBox="0 0 24 24">
+          <rect x="3.5" y="4.5" width="17" height="15" rx="2.2"></rect>
+          <path d="M7.2 9.4 10.1 12l-2.9 2.6"></path>
+          <path d="M12.4 14.6h4.2"></path>
         </svg>
       </button>
 
@@ -136,18 +170,50 @@
               <div class="chat-feed" id="chatFeed"></div>
             </div>
 
-            <div class="card composer-card">
-              <textarea id="messageInput" placeholder="Type your message... (Enter to send, Shift+Enter newline)"></textarea>
+              <div class="card composer-card">
+                <div class="composer-input-wrap">
+                  <textarea id="messageInput" placeholder="Type your message... (Enter to send, Shift+Enter newline)"></textarea>
+                  <div class="composer-quick-controls">
+                    <div class="agent-mode-toggle-wrap" role="group" aria-label="OpenClaw and Hermes mode selector">
+                      <button
+                        id="agentModeOpenclawBtn"
+                        class="agent-mode-btn"
+                        type="button"
+                        data-mode="openclaw"
+                        aria-pressed="false"
+                      >openclaw</button>
+                      <button
+                        id="agentModeHermesBtn"
+                        class="agent-mode-btn"
+                        type="button"
+                        data-mode="hermes"
+                        aria-pressed="false"
+                      >hermes</button>
+                    </div>
+                    <select
+                      id="openclawToolProfileSelect"
+                      class="openclaw-tool-profile-select"
+                      aria-label="OpenClaw tool profile"
+                    >
+                      <option value="auto">Auto</option>
+                      <option value="full">Full</option>
+                    </select>
+                  </div>
+                  <button id="btnAttachMedia" class="send-fab media-fab" type="button" title="Attach Media" aria-label="Attach Media">
+                    <svg class="send-fab-icon media-fab-icon" viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M12 6V18"></path>
+                      <path d="M6 12H18"></path>
+                  </svg>
+                </button>
+                <button id="btnSend" class="send-fab" type="button" title="Send" aria-label="Send">
+                  <svg class="send-fab-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 17V7"></path>
+                    <path d="m7.5 11.5 4.5-4.5 4.5 4.5"></path>
+                  </svg>
+                </button>
+              </div>
               <input id="mediaInput" type="file" accept="image/*,video/*" multiple hidden />
-              <div class="media-toolbar">
-                <button id="btnAttachMedia" class="btn secondary media-btn" type="button">Attach Media</button>
-                <button id="btnClearMedia" class="btn secondary media-btn" type="button">Clear Media</button>
-              </div>
               <div class="media-preview" id="mediaPreview"></div>
-              <div class="btn-row">
-                <button id="btnClear" class="btn secondary" type="button">Clear</button>
-                <button id="btnSend" class="btn primary" type="button">Send</button>
-              </div>
             </div>
 
           </div>
@@ -155,7 +221,6 @@
           <div class="right-panel">
             <div class="history-title">Dashboard</div>
             <div class="card dashboard-card">
-              <div class="dashboard-row"><span class="dashboard-label">Uptime</span><span class="dashboard-value" id="dashUptime">00:00</span></div>
               <div class="dashboard-row"><span class="dashboard-label">Requests</span><span class="dashboard-value" id="dashRequests">0</span></div>
               <div class="dashboard-row"><span class="dashboard-label">Success Rate</span><span class="dashboard-value" id="dashSuccessRate">-</span></div>
               <div class="dashboard-row"><span class="dashboard-label">Avg Latency</span><span class="dashboard-value" id="dashAvgLatency">-</span></div>
@@ -166,6 +231,13 @@
               <div class="dashboard-row"><span class="dashboard-label">Total Tokens</span><span class="dashboard-value" id="dashTotalTokens">0</span></div>
               <div class="dashboard-row"><span class="dashboard-label">Model</span><span class="dashboard-value" id="dashModel">-</span></div>
             </div>
+
+            <div class="history-title-row">
+              <div class="history-title" data-i18n="History Conversations">History Conversations</div>
+              <span class="history-beta-tag">BETA</span>
+            </div>
+            <button id="btnNewConversation" class="btn secondary btn-new-conversation" type="button" title="New Conversation" aria-label="New Conversation">+</button>
+            <div class="card history-conv-list" id="historyConversations"></div>
 
             <button id="btnPing" class="btn secondary btn-clear-history" type="button">Refresh server status</button>
             <div class="panel-fill"></div>
@@ -188,7 +260,7 @@
             <div class="card settings-box">
               <div class="settings-head-row">
                 <div class="settings-subtitle" data-i18n="Settings">Settings</div>
-                <button id="btnDeleteModel" class="btn danger" type="button" data-i18n="Delete">Delete</button>
+                <button id="btnDeleteModel" class="btn danger" type="button" data-i18n="Delete model">Delete model</button>
               </div>
               <div class="hint" id="modelsDeleteHint" data-i18n="Select a local model on the left, then click Delete to remove its local cache.">Select a local model on the left, then click Delete to remove its local cache.</div>
 
@@ -240,39 +312,93 @@
               </div>
 
               <div class="hint" id="modelsHint" data-i18n="Changing runtime options restarts the active model process.">Changing runtime options restarts the active model process.</div>
-              <div class="settings-divider"></div>
-
-              <div class="settings-subtitle" data-i18n="Request Settings">Request Settings</div>
-
-              <div class="settings-row">
-                <label class="row-label" for="serverUrlInput" data-i18n="Server URL">Server URL</label>
-                <input id="serverUrlInput" type="text" placeholder="http://localhost:8000" />
-              </div>
-
-              <div class="settings-row compact">
-                <label class="row-label" for="maxTokensInput" data-i18n="Max Tokens">Max Tokens</label>
-                <input id="maxTokensInput" type="text" inputmode="numeric" placeholder="1024" />
-              </div>
-
-              <div class="settings-row compact">
-                <label class="row-label" for="temperatureRange" data-i18n="Temperature">Temperature</label>
-                <input id="temperatureRange" type="range" min="0" max="2" step="0.05" />
-                <input id="temperatureInput" type="text" inputmode="decimal" placeholder="0.7" />
-              </div>
-
-              <div class="settings-row textarea-row">
-                <label class="row-label" for="systemPromptInput" data-i18n="System Prompt">System Prompt</label>
-                <textarea id="systemPromptInput" placeholder="Optional system instruction sent before user history."></textarea>
-              </div>
-
-              <div class="btn-row settings-actions">
-                <button id="btnResetSettings" class="btn secondary" type="button" data-i18n="Reset">Reset</button>
-                <button id="btnSaveSettings" class="btn primary" type="button" data-i18n="Save">Save</button>
-              </div>
-
-              <div class="hint" data-i18n="Request settings are stored in your browser localStorage for this UI.">Request settings are stored in your browser localStorage for this UI.</div>
             </div>
           </div>
+          <div class="panel-fill"></div>
+        </div>
+      </section>
+
+      <section class="page" data-page="server">
+        <div class="settings-layout">
+          <h2 class="page-title" data-i18n="Server Settings">Server Settings</h2>
+          <div class="card server-mode-card">
+            <div class="hint" data-i18n="Closing the desktop window keeps token-workshed running in status bar tray.">Closing the desktop window keeps token-workshed running in status bar tray.</div>
+
+            <div class="settings-divider"></div>
+            <div class="settings-subtitle" data-i18n="Server Settings">Server Settings</div>
+
+            <div class="settings-row">
+              <label class="row-label" for="serverUrlInput" data-i18n="Server URL">Server URL</label>
+              <input id="serverUrlInput" type="text" placeholder="http://localhost:8000" />
+            </div>
+
+            <div class="settings-row">
+              <label class="row-label" for="managerTokenInput" data-i18n="Manager API Token">Manager API Token</label>
+              <input id="managerTokenInput" type="password" autocomplete="off" placeholder="optional-manager-token" />
+            </div>
+            <div class="hint" data-i18n="Only required when desktop manager auth is enabled.">Only required when desktop manager auth is enabled.</div>
+
+            <div class="settings-divider"></div>
+            <div class="settings-subtitle">Concurrent Models (Desktop)</div>
+            <div class="hint">Select extra local models to keep running in parallel. This increases memory usage.</div>
+            <div id="concurrentModelsList" class="concurrent-models-list" aria-live="polite"></div>
+            <div class="btn-row settings-actions">
+              <button id="btnClearConcurrentModels" class="btn secondary" type="button">Stop Extras</button>
+              <button id="btnApplyConcurrentModels" class="btn primary" type="button">Apply Concurrent Models</button>
+            </div>
+            <div class="hint" id="concurrentModelsHint">Concurrent model controls are available in desktop manager mode.</div>
+
+            <div class="settings-row compact">
+              <label class="row-label" for="chatDispatchModeSelect" data-i18n="Chat Dispatch Mode">Chat Dispatch Mode</label>
+              <select id="chatDispatchModeSelect" class="settings-select">
+                <option value="single" data-i18n="Single (active model)">Single (active model)</option>
+                <option value="parallel" data-i18n="Parallel (all running models)">Parallel (all running models)</option>
+              </select>
+            </div>
+            <div class="hint" data-i18n="Parallel mode sends the same prompt to all running models and merges their replies.">Parallel mode sends the same prompt to all running models and merges their replies.</div>
+
+            <div class="settings-row compact">
+              <label class="row-label" for="maxTokensInput" data-i18n="Max Tokens">Max Tokens</label>
+              <input id="maxTokensInput" type="text" inputmode="numeric" placeholder="1024" />
+            </div>
+
+            <div class="settings-row compact">
+              <label class="row-label" for="temperatureRange" data-i18n="Temperature">Temperature</label>
+              <input id="temperatureRange" type="range" min="0" max="2" step="0.05" />
+              <input id="temperatureInput" type="text" inputmode="decimal" placeholder="0.7" />
+            </div>
+
+            <div class="btn-row settings-actions">
+              <button id="btnResetSettings" class="btn secondary" type="button" data-i18n="Reset">Reset</button>
+              <button id="btnSaveSettings" class="btn primary" type="button" data-i18n="Save">Save</button>
+            </div>
+
+            <div class="hint" data-i18n="Request settings are stored in your browser localStorage for this UI.">Request settings are stored in your browser localStorage for this UI.</div>
+          </div>
+          <div class="panel-fill"></div>
+        </div>
+      </section>
+
+      <section class="page" data-page="prompt">
+        <div class="settings-layout">
+          <h2 class="page-title" data-i18n="System Prompt">System Prompt</h2>
+          <div class="settings-row textarea-row prompt-console-row">
+            <label class="row-label" for="systemPromptInput" data-i18n="System Prompt">System Prompt</label>
+            <div class="prompt-console">
+              <div class="prompt-console-head" aria-hidden="true">
+                <span class="prompt-dot prompt-dot-red"></span>
+                <span class="prompt-dot prompt-dot-amber"></span>
+                <span class="prompt-dot prompt-dot-green"></span>
+                <span class="prompt-console-title">system_prompt.terminal</span>
+              </div>
+              <div class="prompt-console-body">
+                <span class="prompt-console-glyph" aria-hidden="true">$</span>
+                <textarea id="systemPromptInput" placeholder="Optional system instruction sent before user history."></textarea>
+              </div>
+            </div>
+          </div>
+          <div class="hint" data-i18n="System prompt applies immediately to the next message. Press Enter to apply now, Shift+Enter for newline.">System prompt applies immediately to the next message. Press Enter to apply now, Shift+Enter for newline.</div>
+          <div class="hint" data-i18n="System prompt is stored in your browser localStorage for this UI.">System prompt is stored in your browser localStorage for this UI.</div>
           <div class="panel-fill"></div>
         </div>
       </section>
@@ -317,7 +443,8 @@
             <div class="row-label" data-i18n="Language">Language</div>
             <div id="langToggle" class="lang-toggle"></div>
           </div>
-          <div class="about-text" data-i18n="Model and request controls are now under Model Settings.">Model and request controls are now under Model Settings.</div>
+          <div class="about-text" data-i18n="Model controls are under Model Settings.">Model controls are under Model Settings.</div>
+          <div class="about-text" data-i18n="Server mode controls are under Server Mode.">Server mode controls are under Server Mode.</div>
           <div class="about-text" data-i18n="Use this page for UI-level actions.">Use this page for UI-level actions.</div>
           <div class="btn-row settings-actions">
             <button id="btnGoModelSettings" class="btn secondary" type="button" data-i18n="Open Model Settings">Open Model Settings</button>

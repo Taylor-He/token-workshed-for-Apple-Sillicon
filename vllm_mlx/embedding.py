@@ -41,6 +41,19 @@ class EmbeddingEngine:
         elapsed = time.perf_counter() - start
         logger.info(f"Embedding model loaded in {elapsed:.2f}s: {self.model_name}")
 
+    def unload(self) -> None:
+        """Release the loaded embedding model and any cached MLX state."""
+        if not self.is_loaded:
+            return
+
+        self._model = None
+        self._tokenizer = None
+        try:
+            mx.clear_cache()
+        except Exception:
+            pass
+        logger.info(f"Embedding model unloaded: {self.model_name}")
+
     def _ensure_loaded(self) -> None:
         if not self.is_loaded:
             self.load()

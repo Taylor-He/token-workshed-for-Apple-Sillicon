@@ -653,6 +653,8 @@ class TestRateLimiterHTTPResponse:
 
     def test_rate_limiter_window_cleanup(self):
         """Test that rate limiter cleans up old requests from sliding window."""
+        from collections import deque
+
         from vllm_mlx.server import RateLimiter
         import time
 
@@ -668,13 +670,31 @@ class TestRateLimiterHTTPResponse:
 
         # Manually inject old timestamps to simulate time passing
         # The sliding window should clean these up
-        old_time = time.time() - 120  # 2 minutes ago
+        old_time = time.monotonic() - 120  # 2 minutes ago
         with limiter._lock:
-            limiter._requests["test_client"] = [old_time, old_time]
+            limiter._requests["test_client"] = deque([old_time, old_time])
 
         # Now should be allowed again (old requests cleaned up)
         allowed, _ = limiter.is_allowed("test_client")
         assert allowed is True
+
+    def test_rate_limiter_global_cleanup_removes_stale_clients(self):
+        """Periodic cleanup should drop clients whose entire window is stale."""
+        from collections import deque
+
+        from vllm_mlx.server import RateLimiter
+        import time
+
+        limiter = RateLimiter(requests_per_minute=2, enabled=True)
+        old_time = time.monotonic() - 120
+
+        with limiter._lock:
+            limiter._requests["stale_client"] = deque([old_time])
+            limiter._last_global_cleanup = old_time
+
+        limiter.is_allowed("fresh_client")
+
+        assert "stale_client" not in limiter._requests
 
 
 # =============================================================================
