@@ -58,6 +58,7 @@ const AGENT_RUNTIME_BUTTON_WIDTH: f32 = 174.0;
 const AGENT_RUNTIME_BUTTON_HEIGHT: f32 = 32.0;
 const WORKSHED_PREFLIGHT_DEFAULT_OPEN: bool = false;
 const WORKSHED_CATEGORY_STRIPE_WIDTH: f32 = 3.0;
+const WORKSHED_PANEL_WIDTH: f32 = 312.0;
 // A terminal window is a first-class Caligo surface, so its radius follows
 // the app's content radius instead of introducing a separate visual scale.
 const TERMINAL_WINDOW_RADIUS: f32 = CONTENT_RADIUS + 4.0;
@@ -901,11 +902,7 @@ impl cosmic::Application for TokenWorkshedApp {
                 match result {
                     Ok(data) => {
                         let mut persistent_state_changed = false;
-                        self.server_badge = if data.ok {
-                            format!("Server: online ({})", data.server_url)
-                        } else {
-                            format!("Server: offline ({})", data.server_url)
-                        };
+                        self.server_badge = server_badge_label(Some(data.ok)).into();
                         if !data.models.is_empty() && self.models.is_empty() {
                             self.models = data.models.clone();
                         }
@@ -919,7 +916,8 @@ impl cosmic::Application for TokenWorkshedApp {
                         }
                     }
                     Err(error) => {
-                        self.server_badge = format!("Server: status error ({error})");
+                        self.server_badge = server_badge_label(None).into();
+                        self.status_text = format!("Server status unavailable: {error}");
                     }
                 }
             }
@@ -1912,11 +1910,7 @@ impl cosmic::Application for TokenWorkshedApp {
                         } else {
                             data.active_model.clone()
                         };
-                        let switch_error = if !data.ok && !data.last_error.trim().is_empty() {
-                            Some(data.last_error.clone())
-                        } else {
-                            None
-                        };
+                        let switch_error = model_switch_failure(&data);
                         let switch_succeeded = switch_error.is_none();
                         self.apply_manager_payload(data);
                         if switch_error.is_some() {
@@ -5202,7 +5196,7 @@ impl TokenWorkshedApp {
                     .spacing(16),
             )
             .padding([0, 0, 0, 16])
-            .width(Length::Fixed(240.0))
+            .width(Length::Fixed(WORKSHED_PANEL_WIDTH))
             .height(Length::Fill)
             .style(|_| container::Style::default().color(workshed_color("")))
             .into();
@@ -5405,7 +5399,7 @@ impl TokenWorkshedApp {
                 .spacing(14),
         )
         .padding([0, 0, 0, 16])
-        .width(Length::Fixed(240.0))
+        .width(Length::Fixed(WORKSHED_PANEL_WIDTH))
         .height(Length::Fill)
         .style(|_| container::Style::default().color(workshed_color("")))
         .into()
@@ -6110,48 +6104,60 @@ impl TokenWorkshedApp {
             InputBinding::Edge { .. } => "edge",
             InputBinding::Missing => "",
         };
+        let required = if port.required { " · required" } else { "" };
         let mut column = widget::column::with_capacity(8)
             .push(
-                widget::row::with_capacity(2)
-                    .push(self.workshed_label_text(format!(
-                        "{} · {}{}",
-                        port.label,
-                        port.type_name,
-                        if port.required { " · required" } else { "" }
-                    )))
-                    .push(widget::space().width(Length::Fill)),
+                widget::column::with_capacity(2)
+                    .push(self.workshed_label_text(&port.label))
+                    .push(self.workshed_help_text(format!("{}{}", port.type_name, required)))
+                    .spacing(2),
             )
             .spacing(5);
-        let mut modes = widget::row::with_capacity(port.binding_modes.len().max(1)).spacing(3);
         let normalized_modes = if port.binding_modes.is_empty() {
             vec!["edge".to_string(), "literal".to_string()]
         } else {
             port.binding_modes.clone()
         };
-        for mode in normalized_modes {
-            let normalized = if matches!(mode.as_str(), "ref" | "connection") {
-                "edge"
-            } else {
-                mode.as_str()
-            };
-            let label = match normalized {
-                "edge" => "Connect",
-                "literal" => "Value",
-                "auto" => "Auto",
-                "inherited" => "Inherit",
-                other => other,
-            };
-            modes = modes.push(self.small_toggle(
-                label,
-                current_mode == normalized,
-                Message::WorkshedInputModeChanged {
-                    block_id: block_id.clone(),
-                    port: port.name.clone(),
-                    mode: normalized.to_string(),
-                },
-            ));
+        for mode_group in normalized_modes.chunks(2) {
+            let mut modes = widget::row::with_capacity(mode_group.len())
+                .spacing(6)
+                .width(Length::Fill);
+            for mode in mode_group {
+                let normalized = if matches!(mode.as_str(), "ref" | "connection") {
+                    "edge"
+                } else {
+                    mode.as_str()
+                };
+                let label = match normalized {
+                    "edge" => "Connect",
+                    "literal" => "Value",
+                    "auto" => "Auto",
+                    "inherited" => "Inherit",
+                    other => other,
+                };
+                let text = if current_mode == normalized {
+                    format!("> {label}")
+                } else {
+                    label.to_string()
+                };
+                let button = iced::widget::button(centered_text(text, 12))
+                    .padding(0)
+                    .width(Length::Fill)
+                    .height(Length::Fixed(32.0))
+                    .class(iced_button_class(secondary_button_style(
+                        self.active_palette(),
+                        self.accent(),
+                        current_mode == normalized,
+                    )))
+                    .on_press(Message::WorkshedInputModeChanged {
+                        block_id: block_id.clone(),
+                        port: port.name.clone(),
+                        mode: normalized.to_string(),
+                    });
+                modes = modes.push(button);
+            }
+            column = column.push(modes);
         }
-        column = column.push(modes);
         match &binding {
             InputBinding::Edge {
                 block_id: source_id,
@@ -7083,6 +7089,8 @@ impl TokenWorkshedApp {
             .filter(|value| !value.trim().is_empty())
             .unwrap_or("-");
         let agent_profile_label = self.profile_status_label();
+        let agent_profile_controls_active =
+            same_agent_profile_model(&selected_model, &self.current_profile_model());
         let integrity_label = self.model_integrity_status_label();
         let selected_display = selected_detail
             .map(|detail| detail.display_name.as_str())
@@ -7165,19 +7173,27 @@ impl TokenWorkshedApp {
                         .push(self.dashboard_row("Role", role_label))
                         .push(self.dashboard_row("Reasoning", reasoning_label))
                         .push(self.dashboard_row("Tool Parser", tool_parser_label))
-                        .push(self.dashboard_row("Agent Profile", agent_profile_label))
+                        .push(self.dashboard_row("Active Profile", agent_profile_label))
                         .push(self.dashboard_row("Cache Check", integrity_label))
-                        .push(self.split_danger_action_group(
-                            "Recalibrate Profile",
-                            Message::RecalibrateAgentProfilePressed,
-                            "Delete Agent Profile",
-                            Message::DeleteAgentProfilePressed,
-                            136.0,
-                            136.0,
-                        ))
-                        .push(self.soft_text(
-                            "Delete model removes local weights. Delete Profile keeps model weights; Recalibrate reruns both agent probes.",
-                        ))
+                        .push(if agent_profile_controls_active {
+                            self.split_danger_action_group(
+                                "Recalibrate Profile",
+                                Message::RecalibrateAgentProfilePressed,
+                                "Delete Agent Profile",
+                                Message::DeleteAgentProfilePressed,
+                                136.0,
+                                136.0,
+                            )
+                        } else {
+                            self.soft_text(
+                                "Agent Profile controls apply to the active model. Switch to this model to manage its profile.",
+                            )
+                        })
+                        .push(self.soft_text(if agent_profile_controls_active {
+                            "Delete model removes local weights. Delete Profile keeps model weights; Recalibrate reruns both agent probes."
+                        } else {
+                            "Delete model removes local weights."
+                        }))
                         .spacing(8),
                 )
                 .padding(12)
@@ -7207,11 +7223,7 @@ impl TokenWorkshedApp {
                             ),
                             180.0,
                         ))
-                        .push(self.settings_row_fixed(
-                            "Temperature",
-                            self.temperature_control(),
-                            338.0,
-                        ))
+                        .push(self.settings_row("Temperature", self.temperature_control()))
                         .push(self.split_action_group(
                             "Reset",
                             Message::ResetGenerationPressed,
@@ -7252,7 +7264,7 @@ impl TokenWorkshedApp {
                         .push(self.soft_text(
                             "Changing runtime options restarts the active model process.",
                         ))
-                        .push(self.soft_text(&self.status_text))
+                        .push(self.soft_text_wrapped(&self.status_text))
                         .spacing(10),
                 )
                 .padding(12)
@@ -7648,11 +7660,7 @@ impl TokenWorkshedApp {
         let provider: Element<'_, Message> = if integration.provider_url.is_empty() {
             self.soft_text("Provider details are unavailable until the desktop backend is ready.")
         } else {
-            let key = if integration.provider_api_key.is_empty() {
-                "Unavailable (open the desktop App locally)".to_string()
-            } else {
-                integration.provider_api_key.clone()
-            };
+            let key = provider_key_display_label(&integration.provider_api_key);
             let mcp_command = std::iter::once(integration.mcp_command.as_str())
                 .chain(integration.mcp_args.iter().map(String::as_str))
                 .collect::<Vec<_>>()
@@ -7735,7 +7743,7 @@ impl TokenWorkshedApp {
                             empty_dash(&pairing.plugin_version),
                         );
                         let pending_since = if pairing.created_at > 0 {
-                            format!("Requested at {}", pairing.created_at)
+                            format_timestamp_label("Requested", pairing.created_at)
                         } else {
                             "Requested now".into()
                         };
@@ -7801,7 +7809,7 @@ impl TokenWorkshedApp {
                             authorization.scopes.len(),
                         );
                         let approved_at = if authorization.approved_at > 0 {
-                            format!("Approved at {}", authorization.approved_at)
+                            format_timestamp_label("Approved", authorization.approved_at)
                         } else {
                             "Approved".into()
                         };
@@ -7889,7 +7897,7 @@ impl TokenWorkshedApp {
                 .push(
                     widget::column::with_capacity(2)
                         .push(self.page_title(title))
-                        .push(self.soft_text(subtitle))
+                        .push(self.soft_text_wrapped(subtitle))
                         .spacing(3)
                         .width(Length::Fill),
                 )
@@ -7913,7 +7921,7 @@ impl TokenWorkshedApp {
                 widget::container(
                     widget::column::with_capacity(4)
                         .push(self.settings_subtitle(title))
-                        .push(self.soft_text(subtitle))
+                        .push(self.soft_text_wrapped(subtitle))
                         .push(self.caligo_horizontal_rule(false))
                         .push(widget::container(content).width(Length::Fill))
                         .spacing(8)
@@ -8031,10 +8039,7 @@ impl TokenWorkshedApp {
         widget::column::with_capacity(3)
             .push(
                 widget::row::with_capacity(4)
-                    .push(
-                        widget::container(self.history_title("History Conversations"))
-                            .width(Length::Fill),
-                    )
+                    .push(widget::container(self.history_title("History")).width(Length::Fill))
                     .push(self.beta_tag())
                     .push(self.new_conversation_button())
                     .spacing(8)
@@ -8674,8 +8679,8 @@ impl TokenWorkshedApp {
                 .spacing(8)
                 .align_y(Alignment::Center),
         )
-        .height(Length::Fixed(28.0))
-        .padding([4, 8])
+        .height(Length::Shrink)
+        .padding([6, 8])
         .style(|_| dashboard_row_style())
         .into()
     }
@@ -8731,9 +8736,14 @@ impl TokenWorkshedApp {
 
     fn history_title<T: ToString>(&self, text: T) -> Element<'_, Message> {
         let palette = self.active_palette();
-        widget::container(widget::text(text.to_string()).size(14))
-            .style(move |_| container::Style::default().color(palette.text_main))
-            .into()
+        widget::container(
+            widget::text(text.to_string())
+                .size(14)
+                .width(Length::Fill)
+                .wrapping(text::Wrapping::WordOrGlyph),
+        )
+        .style(move |_| container::Style::default().color(palette.text_main))
+        .into()
     }
 
     fn beta_tag(&self) -> Element<'_, Message> {
@@ -9001,20 +9011,12 @@ impl TokenWorkshedApp {
         } else {
             GlassState::Rest
         };
-        widget::container(
-            self.glass_layer(
-                widget::container(input)
-                    .height(Length::Fill)
-                    .align_y(Alignment::Center)
-                    .into(),
-                GlassVariant::Input,
-                state,
-            ),
-        )
-        .height(Length::Fixed(if tall { 88.0 } else { 38.0 }))
-        .align_y(Alignment::Center)
-        .style(move |_| input_shell_style(palette, focused))
-        .into()
+        let input: Element<'a, Message> = input.into();
+        widget::container(self.glass_layer(input, GlassVariant::Input, state))
+            .height(Length::Fixed(if tall { 88.0 } else { 38.0 }))
+            .align_y(Alignment::Center)
+            .style(move |_| input_shell_style(palette, focused))
+            .into()
     }
 
     fn labeled_app_text_input<'a>(
@@ -9331,7 +9333,7 @@ impl TokenWorkshedApp {
             .push(
                 widget::slider(0.0..=2.0, temperature, Message::TemperatureSliderChanged)
                     .step(0.05)
-                    .width(Length::Fixed(240.0))
+                    .width(Length::Fill)
                     .height(38.0)
                     .class(theme::iced::Slider::Custom {
                         active: Rc::new(|_| temperature_slider_style(slider::Status::Active)),
@@ -9347,10 +9349,11 @@ impl TokenWorkshedApp {
                     InputField::Temperature,
                     false,
                 ))
-                .width(Length::Fixed(90.0)),
+                .width(Length::Fixed(76.0)),
             )
             .spacing(8)
             .align_y(Alignment::Center)
+            .width(Length::Fill)
             .into()
     }
 
@@ -9861,6 +9864,70 @@ fn now_millis() -> u128 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
+}
+
+fn server_badge_label(ok: Option<bool>) -> &'static str {
+    match ok {
+        Some(true) => "Server: online",
+        Some(false) => "Server: offline",
+        None => "Server: unavailable",
+    }
+}
+
+fn model_switch_failure(data: &ManagerModelsPayload) -> Option<String> {
+    if data.ok {
+        return None;
+    }
+    Some(if data.last_error.trim().is_empty() {
+        "Desktop manager rejected the model switch without an error message.".into()
+    } else {
+        data.last_error.clone()
+    })
+}
+
+fn provider_key_display_label(key: &str) -> String {
+    if key.trim().is_empty() {
+        "Unavailable (open the desktop App locally)".into()
+    } else {
+        "Configured (hidden)".into()
+    }
+}
+
+fn format_timestamp_label(label: &str, timestamp: i64) -> String {
+    if timestamp <= 0 {
+        return label.to_string();
+    }
+    format_unix_timestamp(timestamp)
+        .map(|formatted| format!("{label} {formatted}"))
+        .unwrap_or_else(|| label.to_string())
+}
+
+fn format_unix_timestamp(timestamp: i64) -> Option<String> {
+    // Bound to four-digit years so malformed manager data cannot overflow the
+    // civil-date conversion or produce an unusable value in Settings.
+    if !(0..=253_402_300_799).contains(&timestamp) {
+        return None;
+    }
+
+    let days = timestamp / 86_400;
+    let seconds_of_day = timestamp % 86_400;
+    let shifted_days = days + 719_468;
+    let era = shifted_days / 146_097;
+    let day_of_era = shifted_days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    year += i64::from(month <= 2);
+
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    Some(format!(
+        "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02} UTC"
+    ))
 }
 
 fn empty_dash(value: &str) -> &str {
@@ -11568,6 +11635,58 @@ mod community_job_tests {
 #[cfg(test)]
 mod agent_profile_tests {
     use super::*;
+
+    #[test]
+    fn server_badge_stays_compact_for_chat_model_picker() {
+        assert_eq!(server_badge_label(Some(true)), "Server: online");
+        assert_eq!(server_badge_label(Some(false)), "Server: offline");
+        assert_eq!(server_badge_label(None), "Server: unavailable");
+        assert!(server_badge_label(None).len() < 24);
+    }
+
+    #[test]
+    fn failed_model_switch_never_falls_through_as_success() {
+        let mut payload = ManagerModelsPayload {
+            ok: false,
+            ..ManagerModelsPayload::default()
+        };
+        assert_eq!(
+            model_switch_failure(&payload).as_deref(),
+            Some("Desktop manager rejected the model switch without an error message.")
+        );
+
+        payload.last_error = "model could not start".into();
+        assert_eq!(
+            model_switch_failure(&payload).as_deref(),
+            Some("model could not start")
+        );
+
+        payload.ok = true;
+        assert_eq!(model_switch_failure(&payload), None);
+    }
+
+    #[test]
+    fn provider_key_display_never_exposes_the_secret() {
+        let secret = "local-bearer-secret-value";
+        let displayed = provider_key_display_label(secret);
+        assert_eq!(displayed, "Configured (hidden)");
+        assert!(!displayed.contains(secret));
+        assert_eq!(
+            provider_key_display_label("  "),
+            "Unavailable (open the desktop App locally)"
+        );
+    }
+
+    #[test]
+    fn ide_timestamps_are_readable_and_reject_out_of_range_values() {
+        assert_eq!(
+            format_timestamp_label("Approved", 1_791_896_086),
+            "Approved 2026-10-13 12:54 UTC"
+        );
+        assert_eq!(format_timestamp_label("Approved", 0), "Approved");
+        assert_eq!(format_timestamp_label("Approved", i64::MAX), "Approved");
+        assert_eq!(format_unix_timestamp(-1), None);
+    }
 
     #[test]
     fn logs_page_is_presented_as_terminal() {

@@ -36,6 +36,7 @@ the build machine. Gatekeeper may block installation on other Macs. A signed,
 notarized installer is a separate follow-up once those Apple credentials are
 available.
 
+
 ## Validation scope
 
 The small-model UI quantization and launch path was exercised locally. This does

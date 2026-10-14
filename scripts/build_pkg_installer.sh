@@ -12,6 +12,11 @@ APP_PATH="$ROOT_DIR/dist/$APP_NAME"
 OUT_PKG="$ROOT_DIR/dist/token-workshed-${VERSION}-installer.pkg"
 PYTHON_PKG_URL="https://www.python.org/ftp/python/${PYTHON_BOOTSTRAP_VERSION}/python-${PYTHON_BOOTSTRAP_VERSION}-macos11.pkg"
 
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Invalid installer version: $VERSION (expected MAJOR.MINOR.PATCH)." >&2
+  exit 2
+fi
+
 if [[ ! -d "$APP_PATH" ]]; then
   echo "Error: missing app bundle: $APP_PATH"
   echo "Build the .app first, then run this script."
@@ -22,6 +27,14 @@ NATIVE_UI_APP_BIN="$APP_PATH/Contents/MacOS/token-workshed-native-ui"
 if [[ ! -x "$NATIVE_UI_APP_BIN" ]]; then
   echo "Error: missing native UI binary in app bundle: $NATIVE_UI_APP_BIN"
   echo "Build native-ui with cargo --release, then rebuild the .app with token-workshed.spec."
+  exit 1
+fi
+
+APP_BUNDLE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Contents/Info.plist")"
+APP_BUNDLE_BUILD_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Contents/Info.plist")"
+if [[ "$APP_BUNDLE_VERSION" != "$VERSION" || "$APP_BUNDLE_BUILD_VERSION" != "$VERSION" ]]; then
+  echo "Error: installer version $VERSION does not match app bundle version $APP_BUNDLE_VERSION/$APP_BUNDLE_BUILD_VERSION."
+  echo "Rebuild the app with TOKEN_WORKSHED_VERSION=$VERSION before packaging."
   exit 1
 fi
 

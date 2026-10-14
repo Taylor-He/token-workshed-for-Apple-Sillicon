@@ -10,12 +10,18 @@ COMPANION_APP_NAME="token-workshed-ide.app"
 COMPANION_APP_PATH="$ROOT_DIR/dist/$COMPANION_APP_NAME"
 APP_BUNDLE_ID="${TOKEN_WORKSHED_APP_BUNDLE_ID:-com.taylorhe.tokenworkshed}"
 COMPANION_BUNDLE_ID="${TOKEN_WORKSHED_IDE_BUNDLE_ID:-com.taylorhe.tokenworkshed.ide}"
+APP_VERSION="${TOKEN_WORKSHED_VERSION:-0.2.0}"
 COMPANION_MACOS_DIR="$COMPANION_APP_PATH/Contents/MacOS"
 COMPANION_RESOURCES_DIR="$COMPANION_APP_PATH/Contents/Resources"
 NATIVE_UI_SRC="${TOKEN_WORKSHED_NATIVE_UI_SOURCE_BIN:-$ROOT_DIR/native-ui/target/release/token-workshed-native-ui}"
 NATIVE_UI_DEST="$MACOS_DIR/token-workshed-native-ui"
 LAUNCHER_SRC="$ROOT_DIR/native-ui/src/macos_app_launcher.swift"
 BACKUP_DIR="$ROOT_DIR/build/app-backups"
+
+if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Invalid app version: $APP_VERSION (expected MAJOR.MINOR.PATCH)." >&2
+  exit 2
+fi
 
 if [[ ! -x "$NATIVE_UI_SRC" ]]; then
   echo "Missing native UI binary: $NATIVE_UI_SRC"
@@ -42,7 +48,8 @@ set -euo pipefail
 
 MACOS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEV_SOURCE_DIR="$(cd "$MACOS_DIR/../../../.." && pwd)"
-INSTALLED_SOURCE_DIR="/Library/Application Support/token-workshed/token-workshed-0.2.0"
+APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$MACOS_DIR/../Info.plist")"
+INSTALLED_SOURCE_DIR="/Library/Application Support/token-workshed/token-workshed-$APP_VERSION"
 INSTALLED_PYTHON="/Library/Application Support/token-workshed/runtime/.venv/bin/python3"
 
 SOURCE_DIR="${TOKEN_WORKSHED_SOURCE_DIR:-}"
@@ -115,9 +122,9 @@ cat >"$APP_PATH/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.2.0</string>
+  <string>${APP_VERSION}</string>
   <key>CFBundleVersion</key>
-  <string>0.2.0</string>
+  <string>${APP_VERSION}</string>
   <key>CFBundleURLTypes</key>
   <array>
     <dict>
@@ -194,9 +201,9 @@ cat >"$COMPANION_APP_PATH/Contents/Info.plist" <<COMPANION_PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.2.0</string>
+  <string>${APP_VERSION}</string>
   <key>CFBundleVersion</key>
-  <string>0.2.0</string>
+  <string>${APP_VERSION}</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>NSPrincipalClass</key>

@@ -3,7 +3,6 @@ use super::*;
 const WORKSHED_COMPACT_WIDTH: f32 = 640.0;
 const WORKSHED_TEXT: Color = Color::from_rgb8(0x11, 0x11, 0x11);
 const WORKSHED_MUTED_TEXT: Color = Color::from_rgb8(0x6b, 0x6b, 0x6b);
-const WORKSHED_PANEL_WIDTH: f32 = 240.0;
 const WORKSHED_LABEL_WIDTH: f32 = 180.0;
 const WORKSHED_BLOCK_CATEGORIES: [(&str, &str); 9] = [
     ("models", "Models"),
@@ -1419,7 +1418,8 @@ mod layout_tests {
     fn center_width_never_exceeds_the_available_canvas() {
         assert_eq!(workshed_center_width(620.0, false), 620.0);
         assert_eq!(workshed_center_width(980.0, false), 980.0);
-        assert_eq!(workshed_center_width(640.0, true), 375.0);
+        assert_eq!(workshed_center_width(640.0, true), 303.0);
+        assert_eq!(workshed_center_width(980.0, true), 643.0);
     }
 
     #[test]
