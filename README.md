@@ -1,7 +1,21 @@
 # Token Workshed
 
-Token Workshed is a custom desktop-focused fork of `vllm-mlx` for Apple Silicon Macs.
-It combines:
+Token Workshed is a native Mac workbench for local MLX models on Apple Silicon.
+In v0.2.0, Workshed can run a 4-bit quantization work order, register the
+resulting model in the local library, and switch to it for chat.
+
+**v0.2.0 developer preview** · macOS 13 or later · Apple Silicon (`arm64`)
+
+[Download the v0.2.0 installer](https://github.com/Taylor-He/token-workshed-for-Apple-Sillicon/releases/download/v0.2.0/token-workshed-0.2.0-installer.pkg) · [Release notes](RELEASE_NOTES_v0.2.0.md)
+
+> **Before installing:** This 237 MB package is unsigned and not notarized;
+> Gatekeeper may block it on your Mac. An internet connection is required on
+> first launch to bootstrap Python and `vllm-mlx`. Model weights are not
+> included and must be downloaded separately. The workflow shown here has been
+> exercised with `ibm-granite/granite-4.0-h-350m`; this does not establish
+> support for every model or model-development operation.
+
+Token Workshed combines:
 
 - a local `vllm-mlx` runtime
 - a native Rust/Iced/libcosmic desktop UI
@@ -99,7 +113,7 @@ integrations/hermes/.token-workshed-state/venv/bin/python -m pip install -U -e i
 
 ## Requirements
 
-- macOS (Apple Silicon / arm64 recommended)
+- macOS 13 or later on Apple Silicon (`arm64`)
 - Python `>= 3.10`
 - Hermes integration: Python `>= 3.11,<3.14`
 - OpenClaw integration: Node `24.15+` (recommended), `22.22.3+`, or `25.9+`
