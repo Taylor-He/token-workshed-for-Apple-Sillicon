@@ -3,6 +3,16 @@
 Token Workshed 0.2.0 introduces **Workshed**, a native workspace for developing
 and quantizing local models on Apple Silicon.
 
+**Developer preview for macOS 13 or later on Apple Silicon (`arm64`).**
+[Download the 237 MB installer](https://github.com/Taylor-He/token-workshed-for-Apple-Sillicon/releases/download/v0.2.0/token-workshed-0.2.0-installer.pkg)
+
+**Install notes:** The installer is unsigned and not notarized; Gatekeeper may
+block it on another Mac. Internet access is required on first launch to
+bootstrap Python and `vllm-mlx`. Model weights are not included and need to be
+downloaded separately. The demonstrated quantization-to-chat path was tested
+with `ibm-granite/granite-4.0-h-350m`; this does not verify every model or
+operation.
+
 ## What's new
 
 - Renamed the native `Quantize` page to **Workshed** and made it the home for

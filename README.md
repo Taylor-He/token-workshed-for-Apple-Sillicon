@@ -4,6 +4,20 @@ Token Workshed is a native Mac workbench for local MLX models on Apple Silicon.
 In v0.2.0, Workshed can run a 4-bit quantization work order, register the
 resulting model in the local library, and switch to it for chat.
 
+## Screenshots
+
+![Token Workshed v0.2.0 Workshed setup for ibm-granite/granite-4.0-h-350m with MLX 4-bit quantization selected](docs/promotion/media/workshed-config.png)
+
+*Workshed setup · `ibm-granite/granite-4.0-h-350m` · MLX 4-bit · v0.2.0.*
+
+![Token Workshed v0.2.0 completed Workshed run for ibm-granite/granite-4.0-h-350m, saved to Managed Models](docs/promotion/media/workshed-result.png)
+
+*Completed run · Granite 350M · saved to Managed Models · v0.2.0.*
+
+![Token Workshed v0.2.0 Chat with ibm-granite/granite-4.0-h-350m selected and an existing response visible](docs/promotion/media/model-chat.png)
+
+*Workshed Chat · existing Granite 350M response · v0.2.0.*
+
 **v0.2.0 developer preview** · macOS 13 or later · Apple Silicon (`arm64`)
 
 [Download the v0.2.0 installer](https://github.com/Taylor-He/token-workshed-for-Apple-Sillicon/releases/download/v0.2.0/token-workshed-0.2.0-installer.pkg) · [Release notes](RELEASE_NOTES_v0.2.0.md)
