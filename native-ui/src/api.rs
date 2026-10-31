@@ -411,7 +411,7 @@ impl ApiClient {
 
     pub async fn community_search(self, query: String) -> Result<CommunitySearchPayload, String> {
         let path = format!(
-            "/api/manager/community/search?q={}&limit=24",
+            "/api/manager/community/search?q={}&limit=80&include_unready=true",
             percent_encode(&query)
         );
         let value = self.get_json(&path)?;
@@ -725,12 +725,15 @@ impl ApiClient {
                 | "/api/manager/delete-model"
                 | "/api/manager/concurrent-models"
         );
+        let read_timeout = if path.starts_with("/api/manager/community/search") {
+            Duration::from_secs(90)
+        } else if long_running {
+            Duration::from_secs(300)
+        } else {
+            Duration::from_secs(20)
+        };
         stream
-            .set_read_timeout(Some(Duration::from_secs(if long_running {
-                300
-            } else {
-                20
-            })))
+            .set_read_timeout(Some(read_timeout))
             .map_err(|e| e.to_string())?;
         stream
             .set_write_timeout(Some(Duration::from_secs(30)))

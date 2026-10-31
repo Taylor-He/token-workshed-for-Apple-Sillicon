@@ -818,6 +818,7 @@ class QuantizationService:
     # Local MLX runner
     # ------------------------------------------------------------------
     def _run_local(self, job_id: str, request: dict[str, Any]) -> None:
+        temp_parent: Path | None = None
         temp_dir: Path | None = None
         try:
             source = request["source"]
@@ -828,7 +829,10 @@ class QuantizationService:
                     raise ValueError("Local source folder is unavailable.")
                 source_ref = str(source_path)
             self.temp_root.mkdir(parents=True, exist_ok=True)
-            temp_dir = Path(tempfile.mkdtemp(prefix=f"{job_id}-", dir=str(self.temp_root)))
+            # mlx_lm.convert expects --mlx-path not to exist yet. Keep a private
+            # temporary parent, then let the converter create its output folder.
+            temp_parent = Path(tempfile.mkdtemp(prefix=f"{job_id}-", dir=str(self.temp_root)))
+            temp_dir = temp_parent / "model"
             self._update(job_id, status="running", stage="converting", progress=0.05, message="MLX-LM conversion started.")
             preset = self._preset(request)
             command = [
@@ -883,7 +887,9 @@ class QuantizationService:
                 self._processes.pop(job_id, None)
                 if self._local_active_id == job_id:
                     self._local_active_id = ""
-            if temp_dir is not None:
+            if temp_parent is not None:
+                shutil.rmtree(temp_parent, ignore_errors=True)
+            elif temp_dir is not None:
                 shutil.rmtree(temp_dir, ignore_errors=True)
             self._persist_locked()
 

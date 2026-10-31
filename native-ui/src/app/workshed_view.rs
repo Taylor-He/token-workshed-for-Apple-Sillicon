@@ -16,6 +16,34 @@ const WORKSHED_BLOCK_CATEGORIES: [(&str, &str); 9] = [
     ("deliver", "Deliver"),
 ];
 
+fn workshed_log_detail(event: &Value) -> String {
+    for key in ["message", "error"] {
+        if let Some(detail) = event.get(key).and_then(Value::as_str) {
+            if !detail.trim().is_empty() {
+                return detail.to_string();
+            }
+        }
+    }
+    if string_at(event, "type") == "command_started" {
+        let executable = string_at(event, "executable");
+        let args = event
+            .get("args")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(" ");
+        return format!("$ {executable} {args}");
+    }
+    let step = string_at(event, "step_id");
+    if step.is_empty() {
+        string_at(event, "type")
+    } else {
+        format!("{} · {step}", string_at(event, "type"))
+    }
+}
+
 pub(super) fn render(app: &TokenWorkshedApp) -> Element<'_, Message> {
     let workspace = widget::responsive(move |size| {
         let available_width = size.width.max(0.0);
@@ -100,10 +128,106 @@ pub(super) fn render(app: &TokenWorkshedApp) -> Element<'_, Message> {
         .padding(0)
         .width(Length::Fill)
         .height(Length::Fill);
-    app.page_frame(iced::widget::Themer::new(Some(workshed_theme()), page).into())
+    let page = app.page_frame(iced::widget::Themer::new(Some(workshed_theme()), page).into());
+    if app.workshed_logs_open {
+        iced::widget::stack(vec![page, app.workshed_run_logs_dialog()])
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    } else {
+        page
+    }
 }
 
 impl TokenWorkshedApp {
+    fn workshed_run_logs_dialog(&self) -> Element<'_, Message> {
+        let palette = self.active_palette();
+        let run = self.workshed_run.as_ref();
+        let run_id = run.map(|value| string_at(value, "id")).unwrap_or_default();
+        let short_id = run_id.chars().take(8).collect::<String>();
+        let status = run
+            .map(|value| string_at(value, "status"))
+            .unwrap_or_else(|| "unavailable".into());
+        let events = run
+            .and_then(|value| value.get("events"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut rows = widget::column::with_capacity(events.len().max(1)).spacing(5);
+        if events.is_empty() {
+            rows = rows.push(
+                widget::text("No output has been recorded for this run yet.")
+                    .size(12)
+                    .class(WORKSHED_MUTED_TEXT),
+            );
+        } else {
+            for event in events {
+                let timestamp = string_at(&event, "at");
+                let kind = string_at(&event, "type");
+                let detail = workshed_log_detail(&event);
+                let line = widget::column::with_capacity(2)
+                    .push(
+                        widget::text(format!("{timestamp} · {kind}"))
+                            .size(10)
+                            .class(WORKSHED_MUTED_TEXT),
+                    )
+                    .push(
+                        widget::text(detail)
+                            .size(11)
+                            .class(WORKSHED_TEXT)
+                            .width(Length::Fill)
+                            .wrapping(text::Wrapping::WordOrGlyph),
+                    )
+                    .spacing(2)
+                    .width(Length::Fill);
+                rows = rows.push(
+                    widget::container(line)
+                        .padding([5, 8])
+                        .width(Length::Fill)
+                        .style(|_| workshed_panel_style()),
+                );
+            }
+        }
+        let heading = widget::row::with_capacity(3)
+            .push(
+                widget::column::with_capacity(2)
+                    .push(widget::text("Run logs").size(16).class(WORKSHED_TEXT))
+                    .push(
+                        widget::text(format!("{status} · {short_id}"))
+                            .size(11)
+                            .class(WORKSHED_MUTED_TEXT),
+                    )
+                    .spacing(3)
+                    .width(Length::Fill),
+            )
+            .push(self.workshed_link_button("Close", Message::WorkshedRunLogsDismissed))
+            .align_y(Alignment::Center);
+        let dialog_content = widget::column::with_capacity(3)
+            .push(heading)
+            .push(self.caligo_horizontal_rule(false))
+            .push(
+                widget::scrollable(widget::container(rows).padding(4).width(Length::Fill))
+                    .height(Length::Fill)
+                    .class(theme::iced::Scrollable::Transient),
+            )
+            .spacing(10)
+            .padding(16)
+            .width(Length::Fixed(820.0))
+            .height(Length::Fixed(540.0));
+        let dialog = widget::container(dialog_content).style(move |_| {
+            glass_container_style(palette, GlassVariant::Floating, GlassState::Focused)
+        });
+        widget::container(dialog)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center)
+            .style(move |_| {
+                container::Style::default().background(Background::Color(palette.overlay_backdrop))
+            })
+            .into()
+    }
+
     // A transient chooser keeps the canvas focused without removing editing
     // entry points. It is deliberately not the former persistent Block Library.
     fn workshed_add_panel(&self) -> Element<'_, Message> {
@@ -445,12 +569,6 @@ impl TokenWorkshedApp {
                     .width(Length::Fill),
             );
         }
-        if picker_open {
-            body = body.push(self.workshed_model_source_selector(block, &definition));
-            if let Some(field) = workshed::field(&definition, "ref") {
-                body = body.push(self.workshed_param_control(block, &definition, &field, &[]));
-            }
-        }
         self.workshed_surface(body, "block", None)
     }
 
@@ -479,7 +597,7 @@ impl TokenWorkshedApp {
         .into()
     }
 
-    fn workshed_model_source_selector(
+    pub(super) fn workshed_model_source_selector(
         &self,
         block: &Value,
         definition: &BlockDefinition,
@@ -502,7 +620,7 @@ impl TokenWorkshedApp {
                 }
                 let label = match value.as_str() {
                     "local" => "Local",
-                    "huggingface" => "Hugging Face",
+                    "huggingface" => "Hub",
                     "managed" => "Managed",
                     _ => choice.label.as_str(),
                 };
@@ -517,11 +635,7 @@ impl TokenWorkshedApp {
                 ));
             }
         }
-        widget::column::with_capacity(2)
-            .push(widget::text("Model source").size(11))
-            .push(choices)
-            .spacing(4)
-            .into()
+        choices.width(Length::Fill).into()
     }
 
     fn workshed_quantize_block(&self, block: &Value, compact: bool) -> Element<'_, Message> {
@@ -947,7 +1061,7 @@ impl TokenWorkshedApp {
                             .wrapping(text::Wrapping::WordOrGlyph),
                     )
                     .push(
-                        self.workshed_compact_button("Open logs", Message::PagePressed(Page::Logs)),
+                        self.workshed_compact_button("Show logs", Message::WorkshedRunLogsPressed),
                     );
                 if status == "completed" {
                     row = row.push(self.workshed_compact_button(
@@ -1015,7 +1129,7 @@ impl TokenWorkshedApp {
                     .spacing(6)
                     .width(Length::Fill);
                 let mut row = widget::row::with_capacity(3).push(detail).push(
-                    self.workshed_compact_button("Open logs", Message::PagePressed(Page::Logs)),
+                    self.workshed_compact_button("Show logs", Message::WorkshedRunLogsPressed),
                 );
                 if allowed.contains("cancel") {
                     row = row.push(

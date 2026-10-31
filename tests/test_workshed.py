@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import io
 import json
+import subprocess
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -409,6 +411,7 @@ def test_parameter_to_runner_to_artifact_receipt_golden_path(tmp_path: Path) -> 
 
 def test_builtin_quantize_uses_frozen_toolchain_python_and_explicit_argv(tmp_path: Path) -> None:
     service = WorkshedService(root=tmp_path, python_executable="/app/python-must-not-run")
+    service._probe_mlx_runtime = lambda: {"available": True, "device": "test Metal", "reason": ""}  # type: ignore[method-assign]
     order = service.create_work_order({"name": "argv"})
     order["blocks"][0]["params"]["model_name"] = "argv"
     order["blocks"].extend(
@@ -452,6 +455,218 @@ def test_builtin_quantize_uses_frozen_toolchain_python_and_explicit_argv(tmp_pat
     assert captured[captured.index("--q-bits") + 1] == "6"
     assert captured[captured.index("--q-group-size") + 1] == "32"
     assert captured[captured.index("--q-mode") + 1] == "affine"
+
+
+def test_preflight_blocks_mlx_work_when_app_runtime_has_no_metal(tmp_path: Path) -> None:
+    service = WorkshedService(root=tmp_path)
+    service._probe_mlx_runtime = lambda: {  # type: ignore[method-assign]
+        "available": False,
+        "device": "",
+        "reason": "No Metal device available to the app runtime.",
+    }
+    order = service.create_work_order({"name": "blocked-by-metal"})
+    order["blocks"][0]["params"]["model_name"] = "blocked-by-metal"
+    order["blocks"].extend(
+        [
+            {
+                "id": "quant",
+                "type_id": "quantize_mlx",
+                "lane": "verify",
+                "order": 1,
+                "params": {"preset_id": "mlx-balanced", "output_name": "blocked"},
+                "input_bindings": {"model": {"kind": "literal", "value": "org/base"}},
+            },
+            {
+                "id": "deliver",
+                "type_id": "register_model",
+                "lane": "deliver",
+                "order": 2,
+                "params": {"test_when_finished": False},
+            },
+        ]
+    )
+    order["edges"] = [
+        {
+            "from": {"block_id": "quant", "port": "model", "type": "Model"},
+            "to": {"block_id": "deliver", "port": "model", "type": "Model"},
+        }
+    ]
+    saved = service.update_work_order(order["id"], order, order["revision"])
+
+    preflight = service.preflight({"work_order": saved})
+    quant_definition = next(item for item in preflight["normalized_order"]["blocks"] if item["id"] == "quant")
+
+    assert preflight["ok"] is False
+    assert any(issue["code"] == "mlx_unavailable" for issue in preflight["errors"])
+    mlx_issue = next(issue for issue in preflight["errors"] if issue["code"] == "mlx_unavailable")
+    assert "No Metal device" in mlx_issue["message"]
+    assert quant_definition["type_id"] == "quantize_mlx"
+
+
+def test_preflight_rejects_an_already_quantized_mlx_model(tmp_path: Path) -> None:
+    service = WorkshedService(root=tmp_path)
+    service._probe_mlx_runtime = lambda: {  # type: ignore[method-assign]
+        "available": True,
+        "device": "test Metal",
+        "reason": "",
+    }
+    source = tmp_path / "gemma-mlx-4bit"
+    source.mkdir()
+    (source / "config.json").write_text(
+        json.dumps({"model_type": "gemma3n", "quantization": {"bits": 4, "group_size": 64}}),
+        encoding="utf-8",
+    )
+
+    order = service.create_work_order({"name": "reject-requantized-source"})
+    order["blocks"][0]["params"]["model_name"] = "reject-requantized-source"
+    definitions = {
+        item["type_id"]: item for item in service.capabilities()["blocks"]
+    }
+    load_params = deepcopy(definitions["load_model"]["default_params"])
+    load_params.update({"source_kind": "local", "ref": str(source), "revision": ""})
+    quantize_params = deepcopy(definitions["quantize_mlx"]["default_params"])
+    quantize_params.update({"preset_id": "mlx-balanced", "output_name": "requantized"})
+    register_params = deepcopy(definitions["register_model"]["default_params"])
+    register_params.update({"model_id": "requantized", "test_when_finished": False})
+    order["blocks"].extend(
+        [
+            {"id": "source", "type_id": "load_model", "lane": "source", "order": 1, "params": load_params},
+            {"id": "quantize", "type_id": "quantize_mlx", "lane": "verify", "order": 2, "params": quantize_params},
+            {"id": "register", "type_id": "register_model", "lane": "deliver", "order": 3, "params": register_params},
+        ]
+    )
+    order["edges"] = [
+        {"from": {"block_id": "source", "port": "model", "type": "Model"}, "to": {"block_id": "quantize", "port": "model", "type": "Model"}},
+        {"from": {"block_id": "quantize", "port": "model", "type": "Model"}, "to": {"block_id": "register", "port": "model", "type": "Model"}},
+    ]
+    saved = service.update_work_order(order["id"], order, order["revision"])
+
+    preflight = service.preflight({"work_order": saved})
+
+    assert preflight["ok"] is False
+    issue = next(error for error in preflight["errors"] if error["code"] == "model_already_quantized")
+    assert issue["block_id"] == "quantize"
+    assert "4-bit MLX-quantized" in issue["message"]
+    assert "original, unquantized Hugging Face weights" in issue["message"]
+
+
+def test_mlx_probe_keeps_actionable_metal_error_ahead_of_native_stack(monkeypatch, tmp_path: Path) -> None:
+    service = WorkshedService(root=tmp_path, python_executable="/tmp/fake-mlx-python")
+    output = (
+        "*** Terminating app due to uncaught exception 'NSRangeException', reason: "
+        "'*** -[__NSArray0 objectAtIndex:]: index 0 beyond bounds for empty array'\n"
+        "\t0 CoreFoundation 0x000000018fc1d7b0 __exceptionPreprocess + 176\n"
+        "\t3 libmlx.dylib _ZN3mlx4core5metal6DeviceC2Ev + 204\n"
+    )
+    monkeypatch.setattr(
+        "vllm_mlx.workshed.subprocess.run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=["/tmp/fake-mlx-python"],
+            returncode=-6,
+            stdout="",
+            stderr=output,
+        ),
+    )
+
+    result = service._probe_mlx_runtime()
+
+    assert result["available"] is False
+    assert "MLX aborted during Metal initialization" in result["reason"]
+    assert "__NSArray0 objectAtIndex" in result["reason"]
+    assert "CoreFoundation" not in result["reason"]
+
+
+def test_register_model_smoke_uses_app_serving_runtime(tmp_path: Path, monkeypatch) -> None:
+    service = WorkshedService(root=tmp_path, python_executable="/app/python")
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    captured: list[tuple[str, str, Path]] = []
+
+    def serve_smoke(run_id: str, path: str, cwd: Path) -> dict[str, Any]:
+        captured.append((run_id, path, cwd))
+        return {
+            "status": "passed",
+            "runner": "vllm_mlx.openai_chat_completions",
+            "engine": "vllm-mlx",
+            "served_model": "model",
+            "response_chars": 5,
+            "elapsed_seconds": 1.25,
+            "scope": "App serving smoke test.",
+            "argv": ["/app/python", "-m", "vllm_mlx.cli", "serve", str(model_path)],
+            "endpoint": "http://127.0.0.1:12345",
+        }
+
+    monkeypatch.setattr(service, "_run_serving_smoke_test", serve_smoke)
+    step = {
+        "type_id": "register_model",
+        "inputs": {"model": str(model_path)},
+        "params": {"model_id": "smoke-tested", "collision_policy": "fail", "test_when_finished": True},
+    }
+
+    artifact = service._execute_step("run-id", step, tmp_path / "workspace")
+
+    assert artifact is not None
+    assert captured == [("run-id", str(model_path), tmp_path / "workspace")]
+    assert artifact["smoke_test"]["runner"] == "vllm_mlx.openai_chat_completions"
+    assert artifact["runner_projection"]["endpoint"] == "http://127.0.0.1:12345"
+
+
+def test_serving_smoke_loads_model_and_issues_chat_completion(tmp_path: Path, monkeypatch) -> None:
+    service = WorkshedService(root=tmp_path, python_executable="/app/python")
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    started: dict[str, Any] = {}
+
+    class FakeProcess:
+        pid = 12345
+        stdout = io.StringIO("server starting\n")
+
+        def __init__(self) -> None:
+            self.returncode: int | None = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            del timeout
+            self.returncode = 0
+            return 0
+
+    process = FakeProcess()
+
+    def fake_popen(command: list[str], **kwargs: Any) -> FakeProcess:
+        started["command"] = command
+        started["kwargs"] = kwargs
+        return process
+
+    class FakeResponse(io.BytesIO):
+        pass
+
+    request_timeouts: list[float] = []
+
+    def fake_urlopen(request: Any, timeout: float) -> FakeResponse:
+        request_timeouts.append(timeout)
+        if request.full_url.endswith("/v1/models"):
+            payload = {"data": [{"id": str(model_path)}]}
+        else:
+            payload = {"choices": [{"message": {"content": "ready"}}]}
+        return FakeResponse(json.dumps(payload).encode("utf-8"))
+
+    monkeypatch.setattr("vllm_mlx.workshed.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("vllm_mlx.workshed.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("vllm_mlx.workshed.os.killpg", lambda *_args: None)
+
+    result = service._run_serving_smoke_test("run-id", str(model_path), workspace)
+
+    assert result["status"] == "passed"
+    assert result["runner"] == "vllm_mlx.openai_chat_completions"
+    assert result["response_chars"] == len("ready")
+    assert request_timeouts == [3, 120]
+    assert "-m" in started["command"]
+    assert "vllm_mlx.cli" in started["command"]
+    assert started["kwargs"]["start_new_session"] is True
 
 
 def test_start_rejects_tampered_frozen_run_plan(tmp_path: Path) -> None:

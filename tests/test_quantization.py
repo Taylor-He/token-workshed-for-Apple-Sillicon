@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import threading
 import zipfile
 from pathlib import Path
 
@@ -23,6 +24,54 @@ def _service(tmp_path: Path) -> QuantizationService:
         worker_state_path=tmp_path / "workers.json",
         request_timeout_s=3,
     )
+
+
+def test_local_converter_receives_a_nonexistent_output_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _service(tmp_path)
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "config.json").write_text("{}", encoding="utf-8")
+    output_name = "demo-mlx-output"
+    job_id = "local-job"
+    request = {
+        "source": {"kind": "local_path", "ref": str(source), "revision": ""},
+        "source_path": str(source),
+        "engine": "mlx_local",
+        "worker_id": "",
+        "preset_id": "mlx-balanced",
+        "overrides": {},
+        "output_name": output_name,
+    }
+    service._jobs[job_id] = {"id": job_id, "status": "queued", "progress": 0.0, "logs": []}
+    service._cancel_events[job_id] = threading.Event()
+    service._local_active_id = job_id
+
+    class CompletedProcess:
+        stdout = io.StringIO("conversion complete\n")
+
+        @staticmethod
+        def wait(timeout: float) -> int:
+            del timeout
+            return 0
+
+    def fake_popen(command: list[str], **_kwargs: object) -> CompletedProcess:
+        destination = Path(command[command.index("--mlx-path") + 1])
+        assert not destination.exists()
+        destination.mkdir()
+        (destination / "config.json").write_text("{}", encoding="utf-8")
+        (destination / "model.safetensors").write_bytes(b"weights")
+        return CompletedProcess()
+
+    monkeypatch.setattr("vllm_mlx.quantization.subprocess.Popen", fake_popen)
+
+    service._run_local(job_id, request)
+
+    job = service.job(job_id)
+    artifact = service.artifact_root / output_name
+    assert job is not None and job["status"] == "awaiting_delivery"
+    assert (artifact / "config.json").is_file()
+    assert (artifact / "model.safetensors").read_bytes() == b"weights"
+    assert list(service.temp_root.iterdir()) == []
 
 
 def test_capabilities_and_preflight_keep_local_and_remote_boundaries(tmp_path: Path) -> None:

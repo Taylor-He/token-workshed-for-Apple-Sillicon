@@ -109,6 +109,7 @@ pub enum Message {
     QuantizationDeliveryLoaded(Result<QuantizationJob, String>),
     WorkshedCapabilitiesLoaded(Result<Value, String>),
     WorkshedWorkOrdersLoaded(Result<Vec<Value>, String>),
+    WorkshedRunsLoaded(Result<Vec<Value>, String>),
     WorkshedWorkOrderLoaded(Result<Value, String>),
     WorkshedPreflightLoaded {
         generation: u64,
@@ -209,8 +210,11 @@ pub enum Message {
     WorkshedRunPressed,
     WorkshedConfirmRunPressed,
     WorkshedModelPickerToggled(String),
+    WorkshedModelResultsToggled(String),
     WorkshedActionPressed(String),
     WorkshedPanelToggled(String),
+    WorkshedRunLogsPressed,
+    WorkshedRunLogsDismissed,
     IdeConnectionsLoaded(Result<IdeConnectionsPayload, String>),
     IdePairingDecisionLoaded {
         approved: bool,
@@ -519,6 +523,10 @@ pub struct TokenWorkshedApp {
     max_tokens_input: String,
     temperature_input: String,
     community_query: String,
+    community_search_has_run: bool,
+    community_search_in_flight: bool,
+    community_search_message: String,
+    community_job_message: String,
     hf_username: String,
     hf_token: String,
     models: Vec<String>,
@@ -553,6 +561,8 @@ pub struct TokenWorkshedApp {
     workshed_search: String,
     workshed_selected_block: String,
     workshed_model_picker: Option<String>,
+    workshed_model_results_open: bool,
+    workshed_option_search_due: Option<(Instant, String, String)>,
     workshed_model_name_input: String,
     workshed_field_drafts: BTreeMap<String, String>,
     workshed_field_errors: BTreeMap<String, String>,
@@ -569,6 +579,7 @@ pub struct TokenWorkshedApp {
     workshed_preflight_open: bool,
     workshed_library_open: bool,
     workshed_inspector_open: bool,
+    workshed_logs_open: bool,
     ide_connections: IdeConnectionsPayload,
     pending_media: Vec<MediaAttachment>,
     selected_concurrent_models: Vec<String>,
@@ -659,6 +670,11 @@ impl cosmic::Application for TokenWorkshedApp {
             max_tokens_input,
             temperature_input,
             community_query: String::new(),
+            community_search_has_run: false,
+            community_search_in_flight: false,
+            community_search_message:
+                "Enter a model name or press Search to browse Hugging Face models.".into(),
+            community_job_message: String::new(),
             hf_username: String::new(),
             hf_token: String::new(),
             models: Vec::new(),
@@ -693,6 +709,8 @@ impl cosmic::Application for TokenWorkshedApp {
             workshed_search: String::new(),
             workshed_selected_block: "load_model_demo".into(),
             workshed_model_picker: None,
+            workshed_model_results_open: false,
+            workshed_option_search_due: None,
             workshed_model_name_input: String::new(),
             workshed_field_drafts: BTreeMap::new(),
             workshed_field_errors: BTreeMap::new(),
@@ -709,6 +727,7 @@ impl cosmic::Application for TokenWorkshedApp {
             workshed_preflight_open: WORKSHED_PREFLIGHT_DEFAULT_OPEN,
             workshed_library_open: false,
             workshed_inspector_open: false,
+            workshed_logs_open: false,
             ide_connections: IdeConnectionsPayload::default(),
             pending_media: Vec::new(),
             selected_concurrent_models: Vec::new(),
@@ -988,29 +1007,49 @@ impl cosmic::Application for TokenWorkshedApp {
             },
             Message::CommunitySearchLoaded(result) => match result {
                 Ok(payload) => {
+                    self.community_search_in_flight = false;
                     self.community_results = payload.results;
-                    self.status_text = format!("Found {} model(s).", payload.count);
+                    self.community_search_message = if payload.count == 0 {
+                        "No matching models. Try a shorter name or an owner/model ID.".into()
+                    } else {
+                        format!("Found {} model(s).", payload.count)
+                    };
+                    self.status_text = self.community_search_message.clone();
                 }
-                Err(error) => self.status_text = format!("Community search failed: {error}"),
+                Err(error) => {
+                    self.community_search_in_flight = false;
+                    self.community_results.clear();
+                    self.community_search_message = format!("Search failed: {error}");
+                    self.status_text = format!("Community search failed: {error}");
+                }
             },
             Message::CommunityJobLoaded(result) => {
                 self.community_job_refresh_in_flight = false;
                 match result {
                     Ok(job) => {
                         self.community_job = normalize_community_job(job);
-                        self.status_text = "Community job updated.".into();
+                        if self.community_job.is_some() {
+                            self.community_job_message.clear();
+                        }
                     }
-                    Err(error) => self.status_text = format!("Community job error: {error}"),
+                    Err(error) => {
+                        self.community_job_message = format!("Job status unavailable: {error}");
+                        self.status_text = format!("Community job error: {error}");
+                    }
                 }
             }
             Message::CommunityDeployLoaded(result) | Message::CommunityJobActionLoaded(result) => {
                 match result {
                     Ok(job) => {
                         self.community_job = normalize_community_job(job);
+                        self.community_job_message = String::new();
                         self.status_text = "Community job updated.".into();
                         return self.refresh_manager_task();
                     }
-                    Err(error) => self.status_text = format!("Community job error: {error}"),
+                    Err(error) => {
+                        self.community_job_message = format!("Job request failed: {error}");
+                        self.status_text = format!("Community job error: {error}");
+                    }
                 }
             }
             Message::QuantizationCapabilitiesLoaded(result) => {
@@ -1214,16 +1253,35 @@ impl cosmic::Application for TokenWorkshedApp {
                 Err(error) => self.status_text = format!("Could not start Workshed run: {error}"),
             },
             Message::WorkshedRunLoaded(result) => match result {
-                Ok(value) => self.workshed_run = Some(value),
+                Ok(value) => {
+                    self.workshed_run = Some(merge_workshed_run(self.workshed_run.take(), value));
+                }
                 Err(error) => self.status_text = format!("Workshed run update failed: {error}"),
+            },
+            Message::WorkshedRunsLoaded(result) => match result {
+                Ok(runs) if !runs.is_empty() => {
+                    if let Some(run) = select_workshed_run(
+                        &runs,
+                        self.workshed_run.as_ref(),
+                        &string_at(&self.workshed_order, "id"),
+                    ) {
+                        self.workshed_run = Some(merge_workshed_run(self.workshed_run.take(), run));
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    self.status_text = format!("Workshed run history unavailable: {error}")
+                }
             },
             Message::WorkshedActionLoaded(result) => match result {
                 Ok(value) => {
-                    self.workshed_run = Some(value);
+                    self.workshed_run = Some(merge_workshed_run(self.workshed_run.take(), value));
                     self.status_text = "Workshed run action sent.".into();
                 }
                 Err(error) => self.status_text = format!("Workshed action failed: {error}"),
             },
+            Message::WorkshedRunLogsPressed => self.workshed_logs_open = true,
+            Message::WorkshedRunLogsDismissed => self.workshed_logs_open = false,
             Message::WorkshedNewPressed => {
                 // Do not discard an unsaved edit or adopt an in-flight save's
                 // identity into a new order. The short autosave must finish first.
@@ -1266,6 +1324,11 @@ impl cosmic::Application for TokenWorkshedApp {
             Message::WorkshedCategoryPressed(category) => self.workshed_category = category,
             Message::WorkshedSearchChanged(value) => self.workshed_search = value,
             Message::WorkshedBlockSelectPressed(block_id) => {
+                if self.workshed_selected_block != block_id {
+                    self.workshed_model_picker = None;
+                    self.workshed_model_results_open = false;
+                    self.workshed_option_search_due = None;
+                }
                 self.workshed_selected_block = block_id.clone();
                 self.workshed_inspector_open = true;
                 self.workshed_library_open = false;
@@ -1273,14 +1336,36 @@ impl cosmic::Application for TokenWorkshedApp {
                 return self.refresh_workshed_options_for_block(&block_id, false);
             }
             Message::WorkshedModelPickerToggled(block_id) => {
-                if self.workshed_model_picker.as_deref() == Some(block_id.as_str()) {
+                let was_open = self.workshed_model_picker.as_deref() == Some(block_id.as_str());
+                self.workshed_selected_block = block_id.clone();
+                self.workshed_inspector_open = true;
+                self.workshed_library_open = false;
+                self.workshed_focused_field = None;
+                if was_open {
                     self.workshed_model_picker = None;
+                    self.workshed_model_results_open = false;
+                    self.workshed_option_search_due = None;
                 } else {
                     self.workshed_model_picker = Some(block_id.clone());
-                    return self.load_workshed_options(&block_id, "ref", true);
+                    self.workshed_model_results_open = false;
+                    self.workshed_option_search_due = None;
+                    self.workshed_option_queries
+                        .insert(workshed_option_key(&block_id, "ref"), String::new());
+                }
+            }
+            Message::WorkshedModelResultsToggled(block_id) => {
+                if self.workshed_model_picker.as_deref() == Some(block_id.as_str()) {
+                    self.workshed_model_results_open = !self.workshed_model_results_open;
+                    if self.workshed_model_results_open {
+                        self.workshed_option_search_due = None;
+                        return self.load_workshed_options(&block_id, "ref", true);
+                    }
                 }
             }
             Message::WorkshedBlockAddPressed(type_id) => {
+                self.workshed_model_picker = None;
+                self.workshed_model_results_open = false;
+                self.workshed_option_search_due = None;
                 workshed_add_block(
                     &mut self.workshed_order,
                     &self.workshed_capabilities,
@@ -1304,6 +1389,9 @@ impl cosmic::Application for TokenWorkshedApp {
                 workshed_delete_block(&mut self.workshed_order, &block_id);
                 if self.workshed_selected_block == block_id {
                     self.workshed_selected_block.clear();
+                    self.workshed_model_picker = None;
+                    self.workshed_model_results_open = false;
+                    self.workshed_option_search_due = None;
                 }
                 self.workshed_field_drafts
                     .retain(|key, _| !key.starts_with(&format!("{block_id}\u{1f}")));
@@ -1324,6 +1412,9 @@ impl cosmic::Application for TokenWorkshedApp {
                 if !block_id.is_empty() {
                     workshed_delete_block(&mut self.workshed_order, &block_id);
                     self.workshed_selected_block.clear();
+                    self.workshed_model_picker = None;
+                    self.workshed_model_results_open = false;
+                    self.workshed_option_search_due = None;
                     self.workshed_field_drafts
                         .retain(|key, _| !key.starts_with(&format!("{block_id}\u{1f}")));
                     self.workshed_field_errors
@@ -1425,10 +1516,25 @@ impl cosmic::Application for TokenWorkshedApp {
                 field,
                 value,
             } => {
-                self.workshed_option_queries
-                    .insert(workshed_option_key(&block_id, &field), value);
+                let key = workshed_option_key(&block_id, &field);
+                self.workshed_option_queries.insert(key.clone(), value);
+                if field == "ref"
+                    && self.workshed_model_picker.as_deref() == Some(block_id.as_str())
+                {
+                    self.workshed_option_requests.remove(&key);
+                    self.workshed_option_loading.remove(&key);
+                    self.workshed_option_results.remove(&key);
+                    self.workshed_model_results_open = true;
+                    self.workshed_option_search_due =
+                        Some((Instant::now() + Duration::from_millis(350), block_id, field));
+                }
             }
             Message::WorkshedOptionSearchPressed { block_id, field } => {
+                if field == "ref"
+                    && self.workshed_model_picker.as_deref() == Some(block_id.as_str())
+                {
+                    self.workshed_option_search_due = None;
+                }
                 return self.load_workshed_options(&block_id, &field, true);
             }
             Message::WorkshedOptionSelected {
@@ -1441,6 +1547,8 @@ impl cosmic::Application for TokenWorkshedApp {
                     && self.workshed_model_picker.as_deref() == Some(block_id.as_str())
                 {
                     self.workshed_model_picker = None;
+                    self.workshed_model_results_open = false;
+                    self.workshed_option_search_due = None;
                 }
                 return self.refresh_workshed_options_for_block(&block_id, true);
             }
@@ -1521,12 +1629,27 @@ impl cosmic::Application for TokenWorkshedApp {
                 }
             }
             Message::WorkshedSaveTick(now) => {
+                let mut tasks = Vec::with_capacity(2);
                 if self.workshed_save_due.is_some_and(|due| now >= due)
                     && !self.workshed_save_in_flight
                 {
                     self.workshed_save_due = None;
                     self.workshed_save_in_flight = true;
-                    return self.queue_workshed_save(self.workshed_save_generation);
+                    tasks.push(self.queue_workshed_save(self.workshed_save_generation));
+                }
+                if self
+                    .workshed_option_search_due
+                    .as_ref()
+                    .is_some_and(|(due, _, _)| now >= *due)
+                {
+                    if let Some((_, block_id, field)) = self.workshed_option_search_due.take() {
+                        if self.workshed_model_picker.as_deref() == Some(block_id.as_str()) {
+                            tasks.push(self.load_workshed_options(&block_id, &field, true));
+                        }
+                    }
+                }
+                if !tasks.is_empty() {
+                    return cosmic::Task::batch(tasks);
                 }
             }
             Message::WorkshedPreflightPressed => return self.workshed_preflight_task(false),
@@ -1590,12 +1713,19 @@ impl cosmic::Application for TokenWorkshedApp {
                     self.workshed_library_open = !self.workshed_library_open;
                     if self.workshed_library_open {
                         self.workshed_inspector_open = false;
+                        self.workshed_model_picker = None;
+                        self.workshed_model_results_open = false;
+                        self.workshed_option_search_due = None;
                     }
                 }
                 "inspector" => {
                     self.workshed_inspector_open = !self.workshed_inspector_open;
                     if self.workshed_inspector_open {
                         self.workshed_library_open = false;
+                    } else {
+                        self.workshed_model_picker = None;
+                        self.workshed_model_results_open = false;
+                        self.workshed_option_search_due = None;
                     }
                 }
                 "preflight" => self.workshed_preflight_open = !self.workshed_preflight_open,
@@ -2290,13 +2420,25 @@ impl cosmic::Application for TokenWorkshedApp {
                 self.status_text = "Native UI storage cleared.".into();
             }
             Message::SearchCommunityPressed => {
+                if self.community_search_in_flight {
+                    return cosmic::Task::none();
+                }
                 let query = self.community_query.trim().to_string();
+                self.community_search_has_run = true;
+                self.community_search_in_flight = true;
+                self.community_results.clear();
+                self.community_search_message = if query.is_empty() {
+                    "Searching popular models on Hugging Face…".into()
+                } else {
+                    format!("Searching Hugging Face for {query}…")
+                };
                 return wrap_app_task(cosmic::Task::perform(
                     self.api_client().community_search(query),
                     Message::CommunitySearchLoaded,
                 ));
             }
             Message::DeployCommunityPressed(model) => {
+                self.community_job_message = format!("Starting download for {model}…");
                 return wrap_app_task(cosmic::Task::perform(
                     self.api_client().community_deploy(model),
                     Message::CommunityDeployLoaded,
@@ -2307,6 +2449,8 @@ impl cosmic::Application for TokenWorkshedApp {
                     community_job_allowed_actions(job).contains(&action.as_str())
                 });
                 if !allowed {
+                    self.community_job_message =
+                        "There is no active community job for that action.".into();
                     self.status_text = "No active community job supports this action.".into();
                     return cosmic::Task::none();
                 }
@@ -2650,7 +2794,7 @@ impl cosmic::Application for TokenWorkshedApp {
                 iced::time::every(Duration::from_millis(700)).map(Message::QuantizationJobTick),
             );
         }
-        if self.workshed_save_due.is_some() {
+        if self.workshed_save_due.is_some() || self.workshed_option_search_due.is_some() {
             subscriptions
                 .push(iced::time::every(Duration::from_millis(100)).map(Message::WorkshedSaveTick));
         }
@@ -3007,6 +3151,10 @@ impl TokenWorkshedApp {
                 self.api_client().workshed_work_orders(),
                 Message::WorkshedWorkOrdersLoaded,
             )),
+            wrap_app_task(cosmic::Task::perform(
+                self.api_client().workshed_runs(),
+                Message::WorkshedRunsLoaded,
+            )),
             self.refresh_workshed_run_task(),
         ])
     }
@@ -3179,6 +3327,8 @@ impl TokenWorkshedApp {
         self.workshed_preflight_generation = self.workshed_preflight_generation.saturating_add(1);
         self.workshed_run = None;
         self.workshed_model_picker = None;
+        self.workshed_model_results_open = false;
+        self.workshed_option_search_due = None;
         self.workshed_run_after_preflight = false;
         self.workshed_selected_block.clear();
         self.workshed_focused_field = None;
@@ -5145,7 +5295,7 @@ impl TokenWorkshedApp {
         label.into()
     }
 
-    fn workshed_inspector_heading(&self) -> Element<'_, Message> {
+    fn workshed_inspector_heading(&self, title: &str) -> Element<'_, Message> {
         let close_icon = widget::icon::from_name("window-close-symbolic")
             .size(13)
             .icon()
@@ -5169,7 +5319,7 @@ impl TokenWorkshedApp {
             .name("Close block settings")
             .on_press(Message::WorkshedPanelToggled("inspector".into()));
         widget::row::with_capacity(3)
-            .push(self.settings_subtitle("Block settings"))
+            .push(self.settings_subtitle(title))
             .push(widget::space().width(Length::Fill))
             .push(close)
             .align_y(Alignment::Center)
@@ -5191,7 +5341,7 @@ impl TokenWorkshedApp {
         let Some(selected) = selected else {
             return widget::container(
                 widget::column::with_capacity(2)
-                    .push(self.workshed_inspector_heading())
+                    .push(self.workshed_inspector_heading("Block settings"))
                     .push(self.workshed_help_text("Select a block to configure it."))
                     .spacing(16),
             )
@@ -5208,6 +5358,8 @@ impl TokenWorkshedApp {
             .get("locked")
             .and_then(Value::as_bool)
             .unwrap_or(type_id == "model_development");
+        let model_picker_open = type_id == "load_model"
+            && self.workshed_model_picker.as_deref() == Some(block_id.as_str());
         let effective =
             Self::workshed_inspector_values(&self.workshed_capabilities, &selected, &definition);
         let issues = workshed::issues(&self.workshed_preflight)
@@ -5223,6 +5375,16 @@ impl TokenWorkshedApp {
             ["preset_id", "preset", "bits", "group_size"]
                 .into_iter()
                 .filter_map(|key| definition.fields.iter().find(|field| field.key == key))
+                .collect::<Vec<_>>()
+        } else if type_id == "load_model" {
+            definition
+                .fields
+                .iter()
+                .filter(|field| {
+                    !field.advanced
+                        && !input_names.contains(field.key.as_str())
+                        && !matches!(field.key.as_str(), "source_kind" | "ref")
+                })
                 .collect::<Vec<_>>()
         } else {
             definition
@@ -5240,13 +5402,69 @@ impl TokenWorkshedApp {
         } else {
             format!("Configure {} for this block.", definition.label)
         };
-        let mut body = widget::column::with_capacity(20)
-            .push(self.workshed_help_text(description))
-            .push(widget::space().height(Length::Fixed(2.0)))
-            .spacing(14);
-        if basic_fields.is_empty() {
+        let mut body = widget::column::with_capacity(20).spacing(10);
+        if model_picker_open {
+            body = body.push(self.workshed_model_source_selector(&selected, &definition));
+            if let Some(field) = workshed::field(&definition, "ref") {
+                body = body.push(self.workshed_model_reference_control(
+                    &selected,
+                    &definition,
+                    &field,
+                    &issues,
+                ));
+            }
+        } else if type_id == "load_model" {
+            let params = workshed::effective_params(&selected, &definition);
+            let source_kind = params
+                .get("source_kind")
+                .and_then(Value::as_str)
+                .unwrap_or("local");
+            let source_label = match source_kind {
+                "huggingface" => "Hub",
+                "managed" => "Managed",
+                _ => "Local",
+            };
+            let reference = workshed::field(&definition, "ref")
+                .map(|field| workshed::field_text(params.get("ref"), &field))
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "Choose a base model".into());
+            let reference = fitted_model_label_for_width(reference, 42);
+            body = body
+                .push(
+                    widget::row::with_capacity(3)
+                        .push(self.settings_subtitle("Base model"))
+                        .push(widget::space().width(Length::Fill))
+                        .push(self.small_button(
+                            "Change",
+                            Message::WorkshedModelPickerToggled(block_id.clone()),
+                        ))
+                        .align_y(Alignment::Center),
+                )
+                .push(
+                    widget::text(reference)
+                        .size(12)
+                        .class(workshed_color(""))
+                        .width(Length::Fill)
+                        .wrapping(text::Wrapping::WordOrGlyph),
+                )
+                .push(self.workshed_help_text(source_label));
+            for field in &basic_fields {
+                body = body.push(self.workshed_inspector_simple_field(
+                    &selected,
+                    &definition,
+                    field,
+                    effective.get(&field.key),
+                    &issues,
+                ));
+            }
+        } else if basic_fields.is_empty() {
+            body = body.push(self.workshed_help_text(description));
+            body = body.push(widget::space().height(Length::Fixed(2.0)));
             body = body.push(self.workshed_help_text("This block has no basic parameters."));
         } else {
+            body = body
+                .push(self.workshed_help_text(description))
+                .push(widget::space().height(Length::Fixed(2.0)));
             for field in &basic_fields {
                 body = body.push(self.workshed_inspector_simple_field(
                     &selected,
@@ -5271,11 +5489,11 @@ impl TokenWorkshedApp {
         let advanced = iced::widget::button(
             widget::row::with_capacity(2)
                 .push(disclosure)
-                .push(widget::text("Advanced").size(13))
-                .spacing(8)
+                .push(widget::text("Advanced").size(12))
+                .spacing(6)
                 .align_y(Alignment::Center),
         )
-        .padding([8, 0])
+        .padding([5, 0])
         .width(Length::Fill)
         .class(iced_button_class(|_, status| {
             let mut style = button::Style::default();
@@ -5292,101 +5510,99 @@ impl TokenWorkshedApp {
             "Expand advanced block settings"
         })
         .on_press(Message::WorkshedAdvancedToggled(block_id.clone()));
-        body = body.push(self.caligo_horizontal_rule(false)).push(advanced);
-        if advanced_open {
-            body = body
-                .push(self.workshed_dashboard_row("Block", &definition.label))
-                .push(self.workshed_dashboard_row("Type", &type_id))
-                .push(self.settings_subtitle("Inputs"));
-            if definition.inputs.is_empty() {
-                body = body.push(self.workshed_help_text("This block has no typed inputs."));
-            } else {
+        if !model_picker_open {
+            body = body.push(self.workshed_subtle_rule()).push(advanced);
+        }
+        if advanced_open && !model_picker_open {
+            if !definition.inputs.is_empty() {
+                body = body.push(self.workshed_section_caption("Inputs"));
                 for port in &definition.inputs {
                     body = body.push(self.workshed_input_control(&selected, port, &issues));
                 }
             }
-            // The quiet summary above never replaces the full schema controls:
-            // every override, Reset, typed binding, and option provider remains
-            // available in the explicitly expanded advanced inspector.
-            body = body.push(self.settings_subtitle("Parameters"));
-            for field in definition.fields.iter().filter(|field| {
-                !input_names.contains(field.key.as_str())
-                    && !basic_field_keys.contains(field.key.as_str())
-            }) {
-                body =
-                    body.push(self.workshed_param_control(&selected, &definition, field, &issues));
+            let advanced_fields = definition
+                .fields
+                .iter()
+                .filter(|field| {
+                    !input_names.contains(field.key.as_str())
+                        && !basic_field_keys.contains(field.key.as_str())
+                })
+                .collect::<Vec<_>>();
+            if !advanced_fields.is_empty() {
+                if !definition.inputs.is_empty() {
+                    body = body.push(self.workshed_subtle_rule());
+                }
+                for (index, field) in advanced_fields.iter().enumerate() {
+                    if index > 0 {
+                        body = body.push(self.workshed_subtle_rule());
+                    }
+                    body = body.push(self.workshed_param_control(
+                        &selected,
+                        &definition,
+                        field,
+                        &issues,
+                        true,
+                    ));
+                }
             }
-            // Expose reset and binding affordances for the simple fields without
-            // rendering a second input with the same native widget identity.
             for field in &basic_fields {
-                body = body.push(self.workshed_inspector_field_actions(&selected, field));
+                let has_override = selected
+                    .get("params")
+                    .and_then(|params| params.get(&field.key))
+                    .is_some();
+                if has_override || field.bindable {
+                    body = body.push(self.workshed_inspector_field_actions(&selected, field));
+                }
             }
-            body = body.push(self.settings_subtitle("Effective values"));
-            for field in &definition.fields {
-                let raw_value = workshed::effective_params(&selected, &definition)
-                    .get(&field.key)
-                    .cloned();
-                let source = if raw_value.as_ref().is_none_or(Value::is_null)
-                    && effective
-                        .get(&field.key)
-                        .is_some_and(|value| !value.is_null())
-                {
-                    "preset".into()
-                } else {
-                    selected
-                        .get("param_origins")
-                        .and_then(|origins| origins.get(&field.key))
-                        .map(|origin| string_at(origin, "kind"))
-                        .filter(|kind| !kind.is_empty())
-                        .unwrap_or_else(|| {
-                            if selected
-                                .get("params")
-                                .and_then(|params| params.get(&field.key))
-                                .is_some_and(|value| !value.is_null())
-                            {
-                                "override".into()
-                            } else {
-                                "default".into()
-                            }
-                        })
-                };
-                body = body.push(self.workshed_dashboard_row(
-                    &field.label,
-                    format!(
-                        "{} · {source}",
-                        workshed::field_text(effective.get(&field.key), field)
-                    ),
-                ));
-            }
-            body = body.push(self.settings_subtitle("Issues"));
-            if issues.is_empty() {
-                body = body.push(self.workshed_help_text("No issues reported for this block."));
-            } else {
-                for issue in &issues {
+            let block_issues = issues
+                .iter()
+                .filter(|issue| issue.field.trim().is_empty())
+                .collect::<Vec<_>>();
+            if !block_issues.is_empty() {
+                body = body.push(self.workshed_section_caption("Needs attention"));
+                for issue in block_issues {
                     body = body.push(self.workshed_issue_button(issue));
                 }
             }
-            body = body.push(self.settings_subtitle("Arrange block"));
-            if is_root {
-                body = body.push(self.workshed_help_text(
-                    "The root block stays at the start of every work order and cannot be deleted.",
-                ));
-            } else {
-                // Stack these actions in the narrow drawer rather than forcing
-                // three fixed-label buttons onto one overflowing row.
-                body = body
-                    .push(self.small_button("Move earlier", Message::WorkshedBlockMovePressed(-1)))
-                    .push(self.small_button("Move later", Message::WorkshedBlockMovePressed(1)))
-                    .push(self.small_button("Duplicate", Message::WorkshedBlockDuplicatePressed))
-                    .push(self.danger_button(
-                        "Delete block",
-                        Message::WorkshedBlockDeletePressed(block_id.clone()),
-                    ));
+            if !is_root {
+                body = body.push(self.workshed_subtle_rule()).push(
+                    widget::row::with_capacity(4)
+                        .push(self.workshed_inline_action(
+                            "↑",
+                            Message::WorkshedBlockMovePressed(-1),
+                            30.0,
+                            "Move block earlier",
+                        ))
+                        .push(self.workshed_inline_action(
+                            "↓",
+                            Message::WorkshedBlockMovePressed(1),
+                            30.0,
+                            "Move block later",
+                        ))
+                        .push(self.workshed_inline_action(
+                            "Copy",
+                            Message::WorkshedBlockDuplicatePressed,
+                            58.0,
+                            "Duplicate block",
+                        ))
+                        .push(self.workshed_inline_action(
+                            "Delete",
+                            Message::WorkshedBlockDeletePressed(block_id.clone()),
+                            60.0,
+                            "Delete block",
+                        ))
+                        .spacing(4)
+                        .align_y(Alignment::Center),
+                );
             }
         }
         widget::container(
             widget::column::with_capacity(2)
-                .push(self.workshed_inspector_heading())
+                .push(self.workshed_inspector_heading(if model_picker_open {
+                    "Choose base model"
+                } else {
+                    "Block settings"
+                }))
                 .push(
                     widget::scrollable(
                         widget::container(body)
@@ -5449,48 +5665,90 @@ impl TokenWorkshedApp {
         field: &ParamField,
     ) -> Element<'_, Message> {
         let block_id = string_at(block, "id");
-        let mut body = widget::column::with_capacity(3)
-            .push(self.workshed_label_text(&field.label))
-            .spacing(5);
-        if !field.description.is_empty() {
-            body = body.push(self.workshed_help_text(&field.description));
-        }
-        let mut actions = widget::column::with_capacity(2).spacing(4);
-        if block
+        let overridden = block
             .get("params")
             .and_then(|params| params.get(&field.key))
-            .is_some()
-        {
-            actions = actions.push(self.small_button(
-                "Reset to default",
+            .is_some();
+        let connected = matches!(
+            workshed::input_binding(&self.workshed_order, block, &format!("param.{}", field.key)),
+            InputBinding::Edge { .. }
+        );
+        let mut row = widget::row::with_capacity(3)
+            .push(
+                widget::text(field.label.clone())
+                    .size(12)
+                    .class(workshed_color(""))
+                    .width(Length::Fill),
+            )
+            .spacing(6)
+            .align_y(Alignment::Center);
+        if overridden {
+            row = row.push(self.workshed_inline_action(
+                "Reset",
                 Message::WorkshedParamReset {
                     block_id: block_id.clone(),
                     field: field.key.clone(),
                 },
+                54.0,
+                format!("Reset {}", field.label),
             ));
         }
         if field.bindable {
-            let connected = matches!(
-                workshed::input_binding(
-                    &self.workshed_order,
-                    block,
-                    &format!("param.{}", field.key)
-                ),
-                InputBinding::Edge { .. }
-            );
-            actions = actions.push(self.small_button(
-                if connected {
-                    "Use value"
-                } else {
-                    "Connect upstream value"
-                },
+            row = row.push(self.workshed_inline_action(
+                if connected { "Detach" } else { "Connect" },
                 Message::WorkshedParamBindingPressed {
                     block_id: block_id.clone(),
                     field: field.key.clone(),
                 },
+                62.0,
+                if connected {
+                    format!("Disconnect {}", field.label)
+                } else {
+                    format!("Connect {}", field.label)
+                },
             ));
         }
-        body.push(actions).width(Length::Fill).into()
+        row.width(Length::Fill).into()
+    }
+
+    fn workshed_inline_action(
+        &self,
+        label: &str,
+        message: Message,
+        width: f32,
+        accessibility_name: impl ToString,
+    ) -> Element<'_, Message> {
+        iced::widget::button(centered_text(label.to_string(), 11))
+            .padding(0)
+            .width(Length::Fixed(width))
+            .height(Length::Fixed(26.0))
+            .class(iced_button_class(secondary_button_style(
+                self.active_palette(),
+                self.accent(),
+                false,
+            )))
+            .name(accessibility_name.to_string())
+            .on_press(message)
+            .into()
+    }
+
+    fn workshed_section_caption(&self, text: &str) -> Element<'_, Message> {
+        widget::text(text.to_string())
+            .size(11)
+            .class(workshed_help_color())
+            .width(Length::Fill)
+            .into()
+    }
+
+    fn workshed_subtle_rule(&self) -> Element<'_, Message> {
+        widget::container(widget::space().height(Length::Fixed(1.0)))
+            .width(Length::Fill)
+            .height(Length::Fixed(1.0))
+            .style(|_| {
+                container::Style::default()
+                    .background(Background::Color(Color::from_rgb8(0xe6, 0xe9, 0xee)))
+            })
+            .into()
     }
 
     fn workshed_inspector_simple_field(
@@ -5506,7 +5764,7 @@ impl TokenWorkshedApp {
             workshed::input_binding(&self.workshed_order, block, &format!("param.{}", field.key)),
             InputBinding::Edge { .. }
         ) {
-            return self.workshed_param_control(block, definition, field, issues);
+            return self.workshed_param_control(block, definition, field, issues, false);
         }
         let label = if matches!(field.key.as_str(), "preset_id" | "preset") {
             "Preset"
@@ -5717,6 +5975,7 @@ impl TokenWorkshedApp {
         definition: &BlockDefinition,
         field: &ParamField,
         issues: &[WorkshedIssue],
+        compact: bool,
     ) -> Element<'_, Message> {
         let block_id = string_at(block, "id");
         let effective = workshed::effective_params(block, definition);
@@ -5726,54 +5985,88 @@ impl TokenWorkshedApp {
             .and_then(|params| params.get(&field.key))
             .is_some();
         let required = if field.required { " · required" } else { "" };
-        let mut column = widget::column::with_capacity(7).push(
-            widget::row::with_capacity(3)
-                .push(self.workshed_label_text(format!("{}{}", field.label, required)))
-                .push(widget::space().width(Length::Fill))
-                .push(if explicit {
-                    self.settings_select_button(
-                        "Reset",
-                        Message::WorkshedParamReset {
-                            block_id: block_id.clone(),
-                            field: field.key.clone(),
-                        },
-                        58.0,
-                    )
-                } else {
-                    widget::space().width(Length::Fixed(58.0)).into()
-                })
-                .align_y(Alignment::Center),
-        );
-        if !field.description.is_empty() {
+        let binding =
+            workshed::input_binding(&self.workshed_order, block, &format!("param.{}", field.key));
+        let connected = matches!(&binding, InputBinding::Edge { .. });
+        let mut heading = widget::row::with_capacity(4)
+            .push(self.workshed_label_text(format!("{}{}", field.label, required)));
+        if compact {
+            if explicit {
+                heading = heading.push(self.workshed_inline_action(
+                    "Reset",
+                    Message::WorkshedParamReset {
+                        block_id: block_id.clone(),
+                        field: field.key.clone(),
+                    },
+                    52.0,
+                    format!("Reset {}", field.label),
+                ));
+            }
+            if field.bindable {
+                heading = heading.push(self.workshed_inline_action(
+                    if connected { "Use value" } else { "Connect" },
+                    Message::WorkshedParamBindingPressed {
+                        block_id: block_id.clone(),
+                        field: field.key.clone(),
+                    },
+                    if connected { 68.0 } else { 62.0 },
+                    if connected {
+                        format!("Use literal value for {}", field.label)
+                    } else {
+                        format!("Connect {} to an upstream value", field.label)
+                    },
+                ));
+            }
+        } else {
+            heading = heading.push(if explicit {
+                self.settings_select_button(
+                    "Reset",
+                    Message::WorkshedParamReset {
+                        block_id: block_id.clone(),
+                        field: field.key.clone(),
+                    },
+                    58.0,
+                )
+            } else {
+                widget::space().width(Length::Fixed(58.0)).into()
+            });
+        }
+        let mut column = widget::column::with_capacity(7).push(heading.align_y(Alignment::Center));
+        if !compact && !field.description.is_empty() {
             column = column.push(self.workshed_help_text(&field.description));
         }
 
-        let target_port = format!("param.{}", field.key);
-        let binding = workshed::input_binding(&self.workshed_order, block, &target_port);
         if let InputBinding::Edge {
             block_id: source_id,
             port,
             ..
         } = &binding
         {
-            column = column.push(
-                widget::row::with_capacity(2)
-                    .push(self.workshed_help_text(format!("Connected · {source_id}.{port}")))
-                    .push(widget::space().width(Length::Fill))
-                    .push(self.settings_select_button(
-                        "Use value",
-                        Message::WorkshedParamBindingPressed {
-                            block_id: block_id.clone(),
-                            field: field.key.clone(),
-                        },
-                        82.0,
-                    ))
-                    .align_y(Alignment::Center),
-            );
+            if !compact {
+                column = column.push(
+                    widget::row::with_capacity(2)
+                        .push(self.workshed_help_text(format!("Connected · {source_id}.{port}")))
+                        .push(widget::space().width(Length::Fill))
+                        .push(self.settings_select_button(
+                            "Use value",
+                            Message::WorkshedParamBindingPressed {
+                                block_id: block_id.clone(),
+                                field: field.key.clone(),
+                            },
+                            82.0,
+                        ))
+                        .align_y(Alignment::Center),
+                );
+            } else if field.bindable {
+                column = column.push(
+                    self.workshed_help_text_sized(format!("Connected to {source_id}.{port}"), 10),
+                );
+            }
         } else {
-            column =
-                column.push(self.workshed_param_value_control(&block_id, definition, field, value));
-            if field.bindable {
+            column = column.push(
+                self.workshed_param_value_control(&block_id, definition, field, value, compact),
+            );
+            if field.bindable && !compact {
                 column = column.push(
                     widget::row::with_capacity(2)
                         .push(self.workshed_help_text(
@@ -5808,11 +6101,18 @@ impl TokenWorkshedApp {
         {
             column = column.push(self.workshed_issue_button(issue));
         }
-        widget::container(column.spacing(5))
-            .padding([7, 7])
-            .width(Length::Fill)
-            .style(|_| workshed_field_style())
-            .into()
+        if compact {
+            widget::container(column.spacing(4))
+                .padding([3, 0])
+                .width(Length::Fill)
+                .into()
+        } else {
+            widget::container(column.spacing(5))
+                .padding([7, 7])
+                .width(Length::Fill)
+                .style(|_| workshed_field_style())
+                .into()
+        }
     }
 
     fn workshed_param_value_control(
@@ -5821,47 +6121,98 @@ impl TokenWorkshedApp {
         definition: &BlockDefinition,
         field: &ParamField,
         value: Option<&Value>,
+        compact: bool,
     ) -> Element<'_, Message> {
         match &field.kind {
             ParamKind::Enum(choices) if !choices.is_empty() => {
                 let selected = value.cloned().unwrap_or(Value::Null);
-                let mut options = widget::column::with_capacity(choices.len()).spacing(3);
-                for choice in choices {
-                    options = options.push(self.small_toggle(
-                        &choice.label,
-                        choice.value == selected,
-                        Message::WorkshedParamSet {
-                            block_id: block_id.to_string(),
-                            field: field.key.clone(),
-                            value: choice.value.clone(),
-                        },
-                    ));
+                if compact {
+                    let options = choices
+                        .iter()
+                        .map(|choice| choice.label.clone())
+                        .collect::<Vec<_>>();
+                    let selected_label = choices
+                        .iter()
+                        .find(|choice| choice.value == selected)
+                        .map(|choice| choice.label.clone());
+                    let choices = choices.clone();
+                    let key = field.key.clone();
+                    let block_id = block_id.to_string();
+                    let picker =
+                        iced::widget::pick_list(options, selected_label, move |label: String| {
+                            let value = choices
+                                .iter()
+                                .find(|choice| choice.label == label)
+                                .map(|choice| choice.value.clone())
+                                .unwrap_or(Value::Null);
+                            Message::WorkshedParamSet {
+                                block_id: block_id.clone(),
+                                field: key.clone(),
+                                value,
+                            }
+                        })
+                        .placeholder("Select")
+                        .padding([6, 8])
+                        .text_size(12)
+                        .text_wrap(text::Wrapping::WordOrGlyph)
+                        .width(Length::Fill);
+                    widget::container(picker)
+                        .height(Length::Fixed(32.0))
+                        .align_y(Alignment::Center)
+                        .width(Length::Fill)
+                        .style(|_| workshed_field_style())
+                        .into()
+                } else {
+                    let mut options = widget::column::with_capacity(choices.len()).spacing(3);
+                    for choice in choices {
+                        options = options.push(self.small_toggle(
+                            &choice.label,
+                            choice.value == selected,
+                            Message::WorkshedParamSet {
+                                block_id: block_id.to_string(),
+                                field: field.key.clone(),
+                                value: choice.value.clone(),
+                            },
+                        ));
+                    }
+                    options.into()
                 }
-                options.into()
             }
             ParamKind::Boolean => {
                 let enabled = value.and_then(Value::as_bool).unwrap_or(false);
-                widget::row::with_capacity(2)
-                    .push(self.small_toggle(
-                        "Off",
-                        !enabled,
-                        Message::WorkshedParamSet {
-                            block_id: block_id.to_string(),
-                            field: field.key.clone(),
-                            value: Value::Bool(false),
-                        },
-                    ))
-                    .push(self.small_toggle(
-                        "On",
+                if compact {
+                    self.small_toggle(
+                        if enabled { "Enabled" } else { "Disabled" },
                         enabled,
                         Message::WorkshedParamSet {
                             block_id: block_id.to_string(),
                             field: field.key.clone(),
-                            value: Value::Bool(true),
+                            value: Value::Bool(!enabled),
                         },
-                    ))
-                    .spacing(4)
-                    .into()
+                    )
+                } else {
+                    widget::row::with_capacity(2)
+                        .push(self.small_toggle(
+                            "Off",
+                            !enabled,
+                            Message::WorkshedParamSet {
+                                block_id: block_id.to_string(),
+                                field: field.key.clone(),
+                                value: Value::Bool(false),
+                            },
+                        ))
+                        .push(self.small_toggle(
+                            "On",
+                            enabled,
+                            Message::WorkshedParamSet {
+                                block_id: block_id.to_string(),
+                                field: field.key.clone(),
+                                value: Value::Bool(true),
+                            },
+                        ))
+                        .spacing(4)
+                        .into()
+                }
             }
             _ => {
                 let mut input_field = field.clone();
@@ -5906,6 +6257,285 @@ impl TokenWorkshedApp {
                 column.into()
             }
         }
+    }
+
+    fn workshed_model_reference_control(
+        &self,
+        block: &Value,
+        definition: &BlockDefinition,
+        field: &ParamField,
+        issues: &[WorkshedIssue],
+    ) -> Element<'_, Message> {
+        let block_id = string_at(block, "id");
+        let effective = workshed::effective_params(block, definition);
+        let value = effective.get(&field.key);
+        let explicit = block
+            .get("params")
+            .and_then(|params| params.get(&field.key))
+            .is_some();
+        let source_kind = effective
+            .get("source_kind")
+            .and_then(Value::as_str)
+            .unwrap_or("local");
+        let current_reference = value
+            .map(|value| workshed::field_text(Some(value), field))
+            .unwrap_or_default();
+        let key = workshed_option_key(&block_id, &field.key);
+        let results_open = self.workshed_model_results_open;
+        let query = self
+            .workshed_option_queries
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
+        let loading = self.workshed_option_loading.contains(&key);
+        let search_pending = self.workshed_option_search_due.as_ref().is_some_and(
+            |(_, pending_block, pending_field)| {
+                pending_block == &block_id && pending_field == &field.key
+            },
+        );
+        let result = self.workshed_option_results.get(&key);
+        let items = result
+            .and_then(|result| result.get("items"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let message = result
+            .map(|result| string_at(result, "message"))
+            .unwrap_or_default();
+
+        let query_block = block_id.clone();
+        let query_field = field.key.clone();
+        let search = widget::text_input(
+            match source_kind {
+                "huggingface" => "Search Hub models",
+                "managed" => "Search managed models",
+                _ => "Search local models",
+            },
+            query.clone(),
+        )
+        .id(workshed_input_id(
+            &block_id,
+            &format!("option:{}", field.key),
+        ))
+        .padding([6, 8])
+        .size(12)
+        .font(cosmic::font::default())
+        .style(app_input_style(self.accent().display_color()))
+        .on_input(move |value| Message::WorkshedOptionQueryChanged {
+            block_id: query_block.clone(),
+            field: query_field.clone(),
+            value,
+        })
+        .on_submit({
+            let submit_block = block_id.clone();
+            let submit_field = field.key.clone();
+            move |_| Message::WorkshedOptionSearchPressed {
+                block_id: submit_block.clone(),
+                field: submit_field.clone(),
+            }
+        })
+        .width(Length::Fill);
+        let search_field = widget::container(search)
+            .padding([0, 8])
+            .height(Length::Fixed(36.0))
+            .width(Length::Fill)
+            .align_y(Alignment::Center)
+            .style(|_| workshed_field_style());
+
+        let trimmed_query = query.trim();
+        let exact_match = items.iter().any(|item| {
+            string_at(item, "id") == trimmed_query || string_at(item, "repo_id") == trimmed_query
+        });
+        let mut results = widget::column::with_capacity(items.len().min(8) + 1).spacing(3);
+        if explicit && !current_reference.trim().is_empty() {
+            results = results.push(self.small_button(
+                "Clear selected model",
+                Message::WorkshedParamReset {
+                    block_id: block_id.clone(),
+                    field: field.key.clone(),
+                },
+            ));
+        }
+        if !trimmed_query.is_empty() && !exact_match {
+            let direct_reference = trimmed_query.to_string();
+            let direct = widget::column::with_capacity(2)
+                .push(
+                    widget::text(direct_reference.clone())
+                        .size(12)
+                        .class(workshed_color(""))
+                        .width(Length::Fill)
+                        .wrapping(text::Wrapping::WordOrGlyph),
+                )
+                .push(
+                    widget::text("Use this exact model ID or path")
+                        .size(10)
+                        .class(workshed_help_color())
+                        .width(Length::Fill),
+                )
+                .spacing(1);
+            results = results.push(
+                iced::widget::button(direct)
+                    .padding([5, 7])
+                    .width(Length::Fill)
+                    .height(Length::Shrink)
+                    .class(iced_button_class(secondary_button_style(
+                        self.active_palette(),
+                        self.accent(),
+                        false,
+                    )))
+                    .name(format!("Use exact model reference {direct_reference}"))
+                    .on_press(Message::WorkshedOptionSelected {
+                        block_id: block_id.clone(),
+                        field: field.key.clone(),
+                        value: direct_reference,
+                    }),
+            );
+        }
+        if items.is_empty() {
+            results = results.push(self.workshed_help_text(if loading {
+                "Searching…".to_string()
+            } else if search_pending {
+                "Searching…".to_string()
+            } else if !message.is_empty() {
+                message.clone()
+            } else if trimmed_query.is_empty() {
+                "Open Models to browse available choices.".to_string()
+            } else {
+                "No matching models. Try a shorter name or exact model ID.".to_string()
+            }));
+        } else {
+            for item in items.iter().take(8) {
+                let option_id = string_at(item, "id").if_empty_then(|| string_at(item, "repo_id"));
+                if option_id.is_empty() {
+                    continue;
+                }
+                let label = {
+                    let label = string_at(item, "label");
+                    if label.is_empty() {
+                        option_id.clone()
+                    } else {
+                        label
+                    }
+                };
+                let detail = string_at(item, "description");
+                let selected = value.is_some_and(|value| {
+                    value == &Value::String(option_id.clone())
+                        || workshed::field_text(Some(value), field) == option_id
+                });
+                let mut row = widget::column::with_capacity(2)
+                    .push(
+                        widget::text(label.clone())
+                            .size(12)
+                            .class(if selected {
+                                Color::WHITE
+                            } else {
+                                workshed_color("")
+                            })
+                            .width(Length::Fill)
+                            .wrapping(text::Wrapping::WordOrGlyph),
+                    )
+                    .spacing(1);
+                if !detail.is_empty() {
+                    row = row.push(
+                        widget::text(detail)
+                            .size(10)
+                            .class(if selected {
+                                Color::from_rgb8(0xd0, 0xd0, 0xd0)
+                            } else {
+                                workshed_help_color()
+                            })
+                            .width(Length::Fill)
+                            .wrapping(text::Wrapping::WordOrGlyph),
+                    );
+                }
+                results = results.push(
+                    iced::widget::button(row)
+                        .padding([5, 7])
+                        .width(Length::Fill)
+                        .height(Length::Shrink)
+                        .class(iced_button_class(secondary_button_style(
+                            self.active_palette(),
+                            self.accent(),
+                            selected,
+                        )))
+                        .name(format!("Select model {label}"))
+                        .on_press(Message::WorkshedOptionSelected {
+                            block_id: block_id.clone(),
+                            field: field.key.clone(),
+                            value: option_id,
+                        }),
+                );
+            }
+        }
+
+        let disclosure_icon = widget::icon::from_name(if results_open {
+            "pan-down-symbolic"
+        } else {
+            "pan-end-symbolic"
+        })
+        .size(12)
+        .icon()
+        .class(theme::Svg::custom(|_| cosmic::iced::widget::svg::Style {
+            color: Some(Color::from_rgb8(0x11, 0x11, 0x11)),
+        }));
+        let disclosure = iced::widget::button(
+            widget::row::with_capacity(3)
+                .push(disclosure_icon)
+                .push(
+                    widget::text(if items.is_empty() {
+                        "Models".to_string()
+                    } else {
+                        format!("Models · {}", items.len())
+                    })
+                    .size(12),
+                )
+                .push(widget::space().width(Length::Fill))
+                .align_y(Alignment::Center),
+        )
+        .padding([5, 2])
+        .width(Length::Fill)
+        .class(iced_button_class(|_, status| {
+            let mut style = button::Style::default();
+            style.text_color = Color::from_rgb8(0x6b, 0x6b, 0x6b);
+            style.border.radius = CONTENT_RADIUS.into();
+            if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+                style.background = Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.025)));
+            }
+            style
+        }))
+        .name(if results_open {
+            "Collapse model list"
+        } else {
+            "Expand model list"
+        })
+        .on_press(Message::WorkshedModelResultsToggled(block_id.clone()));
+        let mut model_section = widget::column::with_capacity(2)
+            .push(disclosure)
+            .spacing(4)
+            .width(Length::Fill);
+        if results_open {
+            model_section = model_section.push(results);
+        }
+        let model_section = widget::container(model_section)
+            .padding([4, 6])
+            .width(Length::Fill)
+            .style(|_| workshed_option_style());
+
+        let mut content = widget::column::with_capacity(2)
+            .push(search_field)
+            .push(model_section)
+            .spacing(7)
+            .width(Length::Fill);
+        if let Some(error) = self
+            .workshed_field_errors
+            .get(&workshed_draft_key(&block_id, &field.key))
+        {
+            content = content.push(self.workshed_help_text(format!("Error · {error}")));
+        }
+        if let Some(issue) = issues.iter().find(|issue| issue.field == field.key) {
+            content = content.push(self.workshed_issue_button(issue));
+        }
+        content.into()
     }
 
     fn workshed_option_picker(
@@ -6046,6 +6676,8 @@ impl TokenWorkshedApp {
         } else {
             field.placeholder.clone()
         };
+        let submit_model_search =
+            field.key == "ref" && self.workshed_model_picker.as_deref() == Some(block_id);
         let input_block = block_id.to_string();
         let input_field = field.key.clone();
         let submit_block = block_id.to_string();
@@ -6065,9 +6697,18 @@ impl TokenWorkshedApp {
                 field: input_field.clone(),
                 value,
             })
-            .on_submit(move |_| Message::WorkshedParamCommit {
-                block_id: submit_block.clone(),
-                field: submit_field.clone(),
+            .on_submit(move |_| {
+                if submit_model_search {
+                    Message::WorkshedOptionSearchPressed {
+                        block_id: submit_block.clone(),
+                        field: submit_field.clone(),
+                    }
+                } else {
+                    Message::WorkshedParamCommit {
+                        block_id: submit_block.clone(),
+                        field: submit_field.clone(),
+                    }
+                }
             })
             .on_focus(Message::WorkshedFieldFocused {
                 block_id: focus_block,
@@ -6105,14 +6746,19 @@ impl TokenWorkshedApp {
             InputBinding::Missing => "",
         };
         let required = if port.required { " · required" } else { "" };
-        let mut column = widget::column::with_capacity(8)
-            .push(
-                widget::column::with_capacity(2)
-                    .push(self.workshed_label_text(&port.label))
-                    .push(self.workshed_help_text(format!("{}{}", port.type_name, required)))
-                    .spacing(2),
-            )
-            .spacing(5);
+        let mut column =
+            widget::column::with_capacity(8)
+                .push(
+                    widget::row::with_capacity(3)
+                        .push(self.workshed_label_text(&port.label))
+                        .push(widget::space().width(Length::Fill))
+                        .push(self.workshed_help_text_sized(
+                            format!("{}{}", port.type_name, required),
+                            10,
+                        ))
+                        .align_y(Alignment::Center),
+                )
+                .spacing(4);
         let normalized_modes = if port.binding_modes.is_empty() {
             vec!["edge".to_string(), "literal".to_string()]
         } else {
@@ -6143,7 +6789,7 @@ impl TokenWorkshedApp {
                 let button = iced::widget::button(centered_text(text, 12))
                     .padding(0)
                     .width(Length::Fill)
-                    .height(Length::Fixed(32.0))
+                    .height(Length::Fixed(28.0))
                     .class(iced_button_class(secondary_button_style(
                         self.active_palette(),
                         self.accent(),
@@ -6168,10 +6814,7 @@ impl TokenWorkshedApp {
                     self.workshed_help_text(format!("Connected from {source_id}.{source_port}")),
                 );
             }
-            InputBinding::Auto => {
-                column = column
-                    .push(self.workshed_help_text("Resolved automatically during preflight."));
-            }
+            InputBinding::Auto => {}
             InputBinding::Inherited(name) => {
                 column = column.push(self.workshed_help_text(format!("Inherited from {name}.")));
             }
@@ -6202,9 +6845,8 @@ impl TokenWorkshedApp {
             column = column.push(self.workshed_issue_button(issue));
         }
         widget::container(column)
-            .padding([7, 7])
+            .padding([3, 0])
             .width(Length::Fill)
-            .style(|_| workshed_field_style())
             .into()
     }
 
@@ -7496,99 +8138,91 @@ impl TokenWorkshedApp {
     }
 
     fn community_page(&self) -> Element<'_, Message> {
-        let palette = self.active_palette();
-        let results: Element<'_, Message> = if self.community_results.is_empty() {
-            self.empty_state("Search results will appear here.")
-        } else {
-            widget::scrollable(
-                self.community_results
-                    .iter()
-                    .fold(
-                        widget::column::with_capacity(self.community_results.len()),
-                        |column, item| column.push(self.community_result_card(item)),
-                    )
-                    .spacing(8)
-                    .width(Length::Fill),
-            )
-            .height(Length::Fill)
+        let search_input = widget::text_input("Search Hugging Face models", &self.community_query)
+            .padding([6, 8])
+            .size(12)
+            .font(cosmic::font::default())
+            .style(app_input_style(self.accent().display_color()))
+            .on_focus(Message::InputFocusChanged(InputField::CommunityQuery, true))
+            .on_unfocus(Message::InputFocusChanged(
+                InputField::CommunityQuery,
+                false,
+            ))
+            .on_input(Message::CommunityQueryChanged)
+            .on_submit_maybe(Some(|_| Message::SearchCommunityPressed))
+            .width(Length::Fill);
+        let search_field = widget::container(search_input)
+            .padding([0, 8])
+            .height(Length::Fixed(36.0))
             .width(Length::Fill)
-            .class(theme::iced::Scrollable::Transient)
-            .into()
-        };
-        let job = self.community_job_card();
-        let search_card = self.section_card(
-            "Search",
-            "Find Hugging Face and local community models.",
-            widget::column::with_capacity(4)
-                .push(self.small_label("Hugging Face model or repo ID"))
-                .push(
-                    widget::row::with_capacity(2)
-                        .push(
-                            widget::container(self.app_text_input(
-                                "Search Hugging Face",
-                                &self.community_query,
-                                Some(Message::CommunityQueryChanged),
-                                InputField::CommunityQuery,
-                                false,
-                            ))
-                            .width(Length::Fill),
-                        )
-                        .push(
-                            widget::container(
-                                self.secondary_button("Search", Message::SearchCommunityPressed),
-                            )
-                            .width(Length::Fixed(88.0)),
-                        )
-                        .spacing(8)
-                        .width(Length::Fill),
-                )
-                .push(self.soft_text_wrapped(
-                    "Enter a model name or Hugging Face repo ID (for example, Qwen).",
-                ))
-                .spacing(8)
-                .width(Length::Fill)
-                .into(),
-        );
+            .align_y(Alignment::Center)
+            .style(|_| workshed_field_style());
+        let search_bar = widget::row::with_capacity(2)
+            .push(search_field)
+            .push(self.settings_select_button(
+                if self.community_search_in_flight {
+                    "Wait"
+                } else {
+                    "Search"
+                },
+                Message::SearchCommunityPressed,
+                74.0,
+            ))
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .width(Length::Fill);
 
-        let results_card = widget::container(
-            self.glass_layer(
-                widget::container(
-                    widget::column::with_capacity(4)
-                        .push(self.settings_subtitle("Search Results"))
-                        .push(self.soft_text(format!("{} result(s)", self.community_results.len())))
-                        .push(self.settings_divider_fill())
-                        .push(results)
-                        .spacing(8)
-                        .width(Length::Fill)
-                        .height(Length::Fill),
+        let show_job = self
+            .community_job
+            .as_ref()
+            .is_some_and(community_job_is_valid)
+            || !self.community_job_message.is_empty();
+        let after_search: Element<'_, Message> = if self.community_search_in_flight {
+            self.soft_text_wrapped("Searching Hugging Face…")
+        } else if self.community_results.is_empty() {
+            self.soft_text_wrapped(&self.community_search_message)
+        } else {
+            let rows = self
+                .community_results
+                .iter()
+                .enumerate()
+                .fold(
+                    widget::column::with_capacity(self.community_results.len() * 2),
+                    |column, (index, item)| {
+                        let column = column.push(self.community_result_card(item));
+                        if index + 1 < self.community_results.len() {
+                            column.push(self.settings_divider_fill())
+                        } else {
+                            column
+                        }
+                    },
                 )
-                .padding(12)
+                .width(Length::Fill);
+            widget::scrollable(rows)
                 .height(Length::Fill)
-                .into(),
-                GlassVariant::Card,
-                GlassState::Rest,
-            ),
-        )
-        .height(Length::Fill)
-        .width(Length::Fill)
-        .style(move |_| flat_frame_host_style(palette));
+                .width(Length::Fill)
+                .class(theme::iced::Scrollable::Transient)
+                .into()
+        };
 
-        let content = widget::container(
-            widget::column::with_capacity(4)
-                .push(search_card)
-                .push(job)
-                .push(results_card)
-                .push(self.soft_text_wrapped(&self.status_text))
-                .spacing(12)
-                .height(Length::Fill),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill);
-        self.page_shell(
-            "Community",
-            "Search, download, deploy, and monitor community model jobs.",
-            content.into(),
-        )
+        let mut content = widget::column::with_capacity(4)
+            .push(search_bar)
+            .spacing(8)
+            .width(Length::Fill)
+            .height(Length::Fill);
+        if self.community_search_has_run {
+            if self.community_search_in_flight || self.community_results.is_empty() {
+                content = content.push(after_search);
+            } else {
+                content = content
+                    .push(self.soft_text_wrapped(&self.community_search_message))
+                    .push(after_search);
+            }
+            if show_job {
+                content = content.push(self.community_job_card());
+            }
+        }
+        self.page_shell("Community", "Find models on Hugging Face.", content.into())
     }
 
     fn settings_page(&self) -> Element<'_, Message> {
@@ -8402,6 +9036,9 @@ impl TokenWorkshedApp {
         let mut body = widget::column::with_capacity(4)
             .push(self.settings_subtitle("Deploy Job"))
             .push(self.soft_text_wrapped(&status));
+        if !self.community_job_message.is_empty() {
+            body = body.push(self.soft_text_wrapped(&self.community_job_message));
+        }
         if let Some(job) = job {
             let actions = community_job_allowed_actions(job);
             if !actions.is_empty() {
@@ -8420,7 +9057,7 @@ impl TokenWorkshedApp {
                 );
                 body = body.push(controls);
             }
-        } else {
+        } else if self.community_job_message.is_empty() {
             body = body
                 .push(self.empty_state("Download and deploy a model to see job progress here."));
         }
@@ -8469,15 +9106,53 @@ impl TokenWorkshedApp {
         let id = string_at(item, "id")
             .if_empty_then(|| string_at(item, "model_id"))
             .if_empty_then(|| string_at(item, "repo_id"));
-        let source = string_at(item, "source").if_empty_then(|| "community".into());
-        let local = item.get("local").and_then(Value::as_bool).unwrap_or(false);
         let downloads = item.get("downloads").and_then(Value::as_u64).unwrap_or(0);
         let likes = item.get("likes").and_then(Value::as_u64).unwrap_or(0);
-        let source_chip = if local { "Local" } else { source.as_str() };
+        let pullable = item
+            .get("pullable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let quantization = string_at(item, "quantization_label");
+        let model_size = string_at(item, "size_label");
+        let compatibility = if pullable {
+            "MLX ready"
+        } else if item
+            .get("mlx_ready")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            "Unsupported file format"
+        } else {
+            "No MLX build"
+        };
+        let metadata = [
+            compatibility.to_string(),
+            model_size,
+            quantization,
+            format!("{downloads} downloads"),
+            format!("{likes} likes"),
+        ]
+        .into_iter()
+        .filter(|value| !value.is_empty() && value != "-")
+        .collect::<Vec<_>>()
+        .join("  ·  ");
+        let action_width = if pullable { 76.0 } else { 112.0 };
+        let action: Element<'_, Message> = if pullable {
+            iced::widget::button(centered_text("Pull".into(), 12))
+                .padding(0)
+                .width(Length::Fixed(68.0))
+                .height(Length::Fixed(28.0))
+                .class(iced_button_class(primary_button_style(self.accent())))
+                .name(format!("Pull {id}"))
+                .on_press(Message::DeployCommunityPressed(id.clone()))
+                .into()
+        } else {
+            self.community_chip("Unavailable")
+        };
         widget::container(
-            widget::column::with_capacity(4)
+            widget::row::with_capacity(2)
                 .push(
-                    widget::row::with_capacity(2)
+                    widget::column::with_capacity(2)
                         .push(
                             widget::row::with_capacity(2)
                                 .push(
@@ -8500,42 +9175,17 @@ impl TokenWorkshedApp {
                                 .align_y(Alignment::Center)
                                 .width(Length::Fill),
                         )
-                        .push(self.community_chip(source_chip))
-                        .spacing(8)
-                        .align_y(Alignment::Center)
-                        .width(Length::Fill),
-                )
-                .push(
-                    widget::row::with_capacity(2)
-                        .push(self.community_chip(format!("downloads {downloads}")))
-                        .push(self.community_chip(format!("likes {likes}")))
-                        .spacing(6),
-                )
-                .push(
-                    widget::row::with_capacity(2)
-                        .push(
-                            widget::container(self.secondary_button(
-                                "Switch Now",
-                                Message::SwitchModelPressed(id.clone()),
-                            ))
-                            .width(Length::FillPortion(1)),
-                        )
-                        .push(
-                            widget::container(self.primary_button(
-                                "Download & Deploy",
-                                Message::DeployCommunityPressed(id.clone()),
-                            ))
-                            .width(Length::FillPortion(1)),
-                        )
+                        .push(self.soft_text_wrapped(metadata))
                         .spacing(8)
                         .width(Length::Fill),
                 )
-                .spacing(8)
+                .push(widget::container(action).width(Length::Fixed(action_width)))
+                .spacing(12)
+                .align_y(Alignment::Center)
                 .width(Length::Fill),
         )
-        .padding(8)
+        .padding([10, 8])
         .width(Length::Fill)
-        .style(|_| community_card_style())
         .into()
     }
 
@@ -8993,6 +9643,18 @@ impl TokenWorkshedApp {
         field: InputField,
         tall: bool,
     ) -> Element<'a, Message> {
+        self.app_text_input_with_submit(placeholder, value, message, field, tall, None)
+    }
+
+    fn app_text_input_with_submit<'a>(
+        &'a self,
+        placeholder: &'a str,
+        value: &'a str,
+        message: Option<fn(String) -> Message>,
+        field: InputField,
+        tall: bool,
+        on_submit: Option<fn(String) -> Message>,
+    ) -> Element<'a, Message> {
         let mut input = widget::text_input(placeholder, value)
             .padding([8, 10])
             .size(13)
@@ -9000,6 +9662,7 @@ impl TokenWorkshedApp {
             .style(app_input_style(self.accent().display_color()))
             .on_focus(Message::InputFocusChanged(field, true))
             .on_unfocus(Message::InputFocusChanged(field, false))
+            .on_submit_maybe(on_submit)
             .width(Length::Fill);
         if let Some(on_input) = message {
             input = input.on_input(on_input);
@@ -10415,14 +11078,6 @@ fn chat_model_option_style(
     }
 }
 
-fn community_card_style() -> container::Style {
-    glass_container_style(
-        palette(MaterialMode::Frosted, true),
-        GlassVariant::Card,
-        GlassState::Rest,
-    )
-}
-
 fn community_chip_style() -> container::Style {
     let palette = palette(MaterialMode::Frosted, false);
     container::Style::default()
@@ -11558,6 +12213,125 @@ fn workshed_block_button_style(
         };
         style.shadow = Shadow::default();
         style
+    }
+}
+
+fn merge_workshed_run(previous: Option<Value>, mut incoming: Value) -> Value {
+    let Some(previous) = previous else {
+        return incoming;
+    };
+    let run_id = string_at(&incoming, "id");
+    if run_id.is_empty() || run_id != string_at(&previous, "id") {
+        return incoming;
+    }
+
+    let mut events = BTreeMap::<u64, Value>::new();
+    let mut unnumbered = Vec::new();
+    for event in previous
+        .get("events")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .chain(
+            incoming
+                .get("events")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten(),
+        )
+    {
+        if let Some(id) = event.get("id").and_then(Value::as_u64) {
+            events.insert(id, event.clone());
+        } else {
+            unnumbered.push(event.clone());
+        }
+    }
+    let mut merged_events: Vec<Value> = events.into_values().collect();
+    merged_events.extend(unnumbered);
+    incoming["events"] = Value::Array(merged_events);
+
+    let cursor = previous
+        .get("event_cursor")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .max(
+            incoming
+                .get("event_cursor")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        );
+    if cursor > 0 {
+        incoming["event_cursor"] = json!(cursor);
+    }
+    incoming
+}
+
+fn select_workshed_run(
+    runs: &[Value],
+    current: Option<&Value>,
+    selected_work_order_id: &str,
+) -> Option<Value> {
+    if let Some(current) = current {
+        let current_id = string_at(current, "id");
+        if let Some(latest) = runs
+            .iter()
+            .find(|run| string_at(run, "id") == current_id && !current_id.is_empty())
+        {
+            let status = string_at(latest, "status");
+            let same_work_order = string_at(latest, "work_order_id") == selected_work_order_id;
+            if !matches!(
+                status.as_str(),
+                "completed" | "failed" | "cancelled" | "interrupted"
+            ) || same_work_order
+            {
+                return Some(latest.clone());
+            }
+        }
+    }
+    runs.iter()
+        .find(|run| string_at(run, "work_order_id") == selected_work_order_id)
+        .or_else(|| runs.first())
+        .cloned()
+}
+
+#[cfg(test)]
+mod workshed_run_log_tests {
+    use super::*;
+
+    #[test]
+    fn incremental_run_poll_keeps_all_log_events_without_duplicates() {
+        let previous = json!({
+            "id": "run-1",
+            "event_cursor": 2,
+            "events": [
+                {"id": 1, "type": "step_started"},
+                {"id": 2, "type": "log", "message": "Traceback"}
+            ]
+        });
+        let incoming = json!({
+            "id": "run-1",
+            "event_cursor": 3,
+            "events": [
+                {"id": 2, "type": "log", "message": "Traceback"},
+                {"id": 3, "type": "step_failed"}
+            ]
+        });
+
+        let merged = merge_workshed_run(Some(previous), incoming);
+        let events = merged["events"].as_array().unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[1]["message"], "Traceback");
+        assert_eq!(merged["event_cursor"], 3);
+    }
+
+    #[test]
+    fn workshed_page_restores_latest_run_for_selected_order() {
+        let runs = vec![
+            json!({"id": "newer-other", "work_order_id": "other", "status": "failed"}),
+            json!({"id": "selected", "work_order_id": "local-draft", "status": "failed"}),
+        ];
+        let selected = select_workshed_run(&runs, None, "local-draft").unwrap();
+        assert_eq!(selected["id"], "selected");
     }
 }
 

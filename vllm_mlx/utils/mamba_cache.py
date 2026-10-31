@@ -127,10 +127,25 @@ def patch_mlx_lm_for_mamba():
         from mlx_lm.models.cache import MambaCache as OrigMambaCache
     except ImportError:
         OrigMambaCache = ArraysCache  # Fallback
-    from mlx_lm.generate import BatchKVCache, BatchRotatingKVCache
+    # MLX-LM moved the batch cache classes into ``models.cache`` in newer
+    # releases. Keep the old import path as a fallback for older runtimes.
+    try:
+        from mlx_lm.models.cache import BatchKVCache, BatchRotatingKVCache
+    except ImportError:
+        from mlx_lm.generate import BatchKVCache, BatchRotatingKVCache
 
-    # Store original function
-    _original_make_cache = gen_module._make_cache
+    # This monkey patch targets MLX-LM's legacy private cache factory. Newer
+    # MLX-LM releases construct caches inside BatchGenerator and no longer
+    # expose ``_make_cache``. Leave those implementations untouched instead
+    # of failing every server startup while importing the compatibility shim.
+    _original_make_cache = getattr(gen_module, "_make_cache", None)
+    _original_merge_caches = getattr(gen_module, "_merge_caches", None)
+    if _original_make_cache is None or _original_merge_caches is None:
+        logger.info(
+            "Skipping legacy Mamba batch-cache patch; "
+            "MLX-LM no longer exposes the required private cache helpers"
+        )
+        return
 
     def _patched_make_cache(model, left_padding, max_kv_size=None):
         """
@@ -178,8 +193,6 @@ def patch_mlx_lm_for_mamba():
     gen_module._make_cache = _patched_make_cache
 
     # Also patch _merge_caches to handle BatchMambaCache
-    _original_merge_caches = gen_module._merge_caches
-
     def _patched_merge_caches(caches):
         """Merge caches with MambaCache support."""
         batch_cache = []

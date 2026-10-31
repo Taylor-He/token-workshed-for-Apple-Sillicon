@@ -220,6 +220,7 @@ rsync -a \
   --exclude "/.ruff_cache/" \
   --exclude "/*.egg-info/" \
   --exclude "/.token-workshed-state/" \
+  --exclude "/docs/promotion/" \
   --exclude "/.openclaw/" \
   --exclude "/.codex/" \
   --exclude "/.aws/" \

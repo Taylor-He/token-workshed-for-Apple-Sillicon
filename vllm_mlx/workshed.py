@@ -18,15 +18,18 @@ import hashlib
 import json
 import math
 import os
-import queue
+import platform
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 import uuid
 from collections import deque
 from collections.abc import Callable
@@ -64,34 +67,74 @@ _PARAM_ORIGINS = {
 _RUNNER_VERSIONS = {"mlx_local": "2", "hf_mps": "2", "manager": "2"}
 _RESOURCE_PORT_TYPES = {"Model", "Adapter", "Dataset", "Report", "Artifact", "Metric"}
 _FINAL_RECEIPT_STATUSES = {"completed", "cancelled"}
-_SMOKE_TEST_TIMEOUT_SECONDS = 120
-_SMOKE_TEST_RESULT_PREFIX = "WORKSHED_SMOKE_RESULT="
-# This program is application-owned. Work-order values are passed separately
-# through argv and cannot change Python source or package names.
-_SMOKE_TEST_PROGRAM = """
-import json, sys, time
+_APP_SERVE_SMOKE_TIMEOUT_SECONDS = 300
+_MLX_PROBE_PREFIX = "WORKSHED_MLX_PROBE="
+_MLX_PROBE_PROGRAM = """
+import json
 import mlx.core as mx
-from mlx_lm import load, generate
-from mlx_lm.sample_utils import make_sampler
-started = time.monotonic()
-mx.random.seed(42)
-model, tokenizer = load(sys.argv[1], tokenizer_config={"trust_remote_code": False})
-prompt = "Introduce yourself in one short sentence."
-if getattr(tokenizer, "chat_template", None):
-    prompt = tokenizer.apply_chat_template(
-        [{"role": "user", "content": prompt}], tokenize=False, add_generation_prompt=True
-    )
-answer = generate(model, tokenizer, prompt=prompt, max_tokens=24,
-                  sampler=make_sampler(temp=0.0), verbose=False)
-if not answer.strip():
-    raise RuntimeError("The model loaded but did not produce a text response.")
-print("WORKSHED_SMOKE_RESULT=" + json.dumps({
-    "status": "passed", "engine": "mlx-lm", "seed": 42,
-    "generation_limit": 24, "generated_text": answer[:1000],
-    "elapsed_seconds": round(time.monotonic() - started, 3),
-    "scope": "Model loading and short generation only; not a quality evaluation."
-}))
+available = bool(mx.metal.is_available())
+device = mx.metal.device_info() if available else {}
+reason = "" if available else "MLX reports that no Metal device is available to the app runtime."
+print("WORKSHED_MLX_PROBE=" + json.dumps({"available": available, "device": device, "mlx_version": getattr(mx, "__version__", ""), "reason": reason}))
+raise SystemExit(0 if available else 3)
 """
+_MLX_COMPUTE_BLOCKS = {
+    "train_sft", "train_lora", "train_qlora", "train_dora", "train_full",
+    "fuse_adapter", "quantize_mlx", "generate_teacher_responses",
+    "response_distill", "evaluate_loss", "benchmark_model",
+}
+_MLX_PROBE_CACHE_TTL_SECONDS = 45.0
+_MLX_PROBE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_MLX_PROBE_CACHE_LOCK = threading.Lock()
+
+
+def _summarize_mlx_probe_failure(stdout: str, stderr: str, returncode: int) -> str:
+    """Keep the actionable failure from MLX output instead of a native stack tail."""
+
+    lines = [line.strip() for line in f"{stdout}\n{stderr}".splitlines() if line.strip()]
+    combined = "\n".join(lines)
+    lowered = combined.lower()
+    no_metal_line = next(
+        (line for line in lines if "no metal device" in line.lower()),
+        "",
+    )
+    if no_metal_line:
+        return " ".join(no_metal_line.split())[:900]
+
+    if ("nsexception" in lowered or "nsrangeexception" in lowered) and (
+        "metal" in lowered or "libmlx" in lowered
+    ):
+        reason_line = next(
+            (line for line in lines if "reason:" in line.lower()),
+            "MLX aborted while initializing a Metal device.",
+        )
+        return (
+            "MLX aborted during Metal initialization. macOS reported "
+            f"{' '.join(reason_line.split())[:500]} This process may not have access to a Metal device."
+        )
+
+    error_line = next(
+        (
+            line
+            for line in reversed(lines)
+            if any(
+                marker in line.lower()
+                for marker in ("importerror:", "modulenotfounderror:", "runtimeerror:", "error:")
+            )
+        ),
+        "",
+    )
+    if error_line:
+        return " ".join(error_line.split())[:900]
+
+    useful_lines = [
+        line
+        for line in lines
+        if not line.startswith(("0x", "lib", "_ZN", "\t"))
+        and not re.match(r"^\d+\s+", line)
+    ]
+    detail = " ".join(useful_lines[-4:])[-900:]
+    return detail or f"MLX runtime probe exited with code {returncode}."
 
 # A small, reviewable lock manifest. User-entered block parameters never flow
 # into these package specs. Deployments may update this table as a release,
@@ -181,6 +224,7 @@ class WorkshedService:
         self._preflights: dict[str, dict[str, Any]] = {}
         self._cancel: dict[str, threading.Event] = {}
         self._processes: dict[str, subprocess.Popen[str]] = {}
+        self._mlx_probe_cache: dict[str, Any] | None = None
         self._active_run_id = ""
         self._queued_runs: deque[str] = deque()
         self._load()
@@ -264,6 +308,13 @@ class WorkshedService:
         """
 
         blocks = self._block_definitions()
+        mlx_runtime = self._probe_mlx_runtime()
+        if not mlx_runtime["available"]:
+            for block in blocks:
+                if block.get("type_id") in _MLX_COMPUTE_BLOCKS and block.get("available") is True:
+                    block["available"] = False
+                    block["unavailable_reason"] = str(mlx_runtime["reason"])
+        mlx_status = "ready" if mlx_runtime["available"] else "unavailable"
         return {
             "ok": True,
             "schema_version": _WORK_ORDER_SCHEMA_VERSION,
@@ -273,6 +324,7 @@ class WorkshedService:
                 "python": sys.version.split()[0],
                 "local_only": True,
                 "concurrency": 1,
+                "mlx": deepcopy(mlx_runtime),
             },
             "runners": [
                 {
@@ -280,7 +332,8 @@ class WorkshedService:
                     "version": _RUNNER_VERSIONS["mlx_local"],
                     "label": "MLX-LM · This Mac",
                     "kind": "local",
-                    "status": "ready" if sys.platform == "darwin" else "limited",
+                    "status": mlx_status if sys.platform == "darwin" else "limited",
+                    "unavailable_reason": str(mlx_runtime["reason"]),
                     "blocks": [item["type_id"] for item in blocks if "mlx_local" in item.get("runners", [])],
                 },
                 {
@@ -297,6 +350,73 @@ class WorkshedService:
             "root_block": self._root_definition(),
             "blocks": blocks,
         }
+
+    def _probe_mlx_runtime(self) -> dict[str, Any]:
+        """Probe the app's MLX runtime in a child process so Metal failures are contained."""
+
+        if self._runner is not None:
+            return {"available": True, "device": "synthetic test runner", "reason": ""}
+        if sys.platform != "darwin" or platform.machine().lower() not in {"arm64", "aarch64"}:
+            return {
+                "available": False,
+                "device": "",
+                "reason": "MLX serving requires an Apple Silicon Mac with an available Metal device.",
+            }
+
+        cache_key = os.path.abspath(self.python_executable)
+        now = time.monotonic()
+        with _MLX_PROBE_CACHE_LOCK:
+            cached = _MLX_PROBE_CACHE.get(cache_key)
+            if cached and now - cached[0] < _MLX_PROBE_CACHE_TTL_SECONDS:
+                self._mlx_probe_cache = deepcopy(cached[1])
+                return deepcopy(cached[1])
+
+        result: dict[str, Any]
+        try:
+            completed = subprocess.run(
+                [self.python_executable, "-c", _MLX_PROBE_PROGRAM],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+            payload = next(
+                (
+                    line[len(_MLX_PROBE_PREFIX):]
+                    for line in reversed((completed.stdout or "").splitlines())
+                    if line.startswith(_MLX_PROBE_PREFIX)
+                ),
+                "",
+            )
+            probe = json.loads(payload) if payload else {}
+            available = completed.returncode == 0 and probe.get("available") is True
+            if available:
+                result = {
+                    "available": True,
+                    "device": str((probe.get("device") or {}).get("architecture", "Apple Metal")),
+                    "mlx_version": str(probe.get("mlx_version", "")),
+                    "reason": "",
+                }
+            else:
+                detail = str(probe.get("reason", "")).strip() or _summarize_mlx_probe_failure(
+                    completed.stdout or "",
+                    completed.stderr or "",
+                    completed.returncode,
+                )
+                result = {
+                    "available": False,
+                    "device": "",
+                    "reason": str(_redact(detail))[:900],
+                }
+        except subprocess.TimeoutExpired:
+            result = {"available": False, "device": "", "reason": "MLX Metal probe timed out after 20 seconds."}
+        except Exception as exc:
+            result = {"available": False, "device": "", "reason": str(_redact(exc))[:900]}
+
+        with _MLX_PROBE_CACHE_LOCK:
+            _MLX_PROBE_CACHE[cache_key] = (time.monotonic(), deepcopy(result))
+        self._mlx_probe_cache = deepcopy(result)
+        return result
 
     @staticmethod
     def _object_schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
@@ -691,8 +811,8 @@ class WorkshedService:
             action(
                 "register_model", "deliver", "register new model", [("model", "Model")], [("artifact", "Artifact")],
                 {"model_id": None, "collision_policy": "fail", "test_when_finished": True},
-                {"model_id": string_or_null, "collision_policy": {"type": "string", "enum": ["fail", "replace", "version"]}, "test_when_finished": {"type": "boolean", "description": "Load the saved model and generate a short response before registering it. This is not a quality evaluation."}},
-                lanes=["deliver"], advanced=["collision_policy"],
+                {"model_id": string_or_null, "collision_policy": {"type": "string", "enum": ["fail", "replace", "version"]}, "test_when_finished": {"type": "boolean", "description": "Start the same local vllm-mlx server used by Model Settings and verify a chat completion before registering the model."}},
+                runners=["manager"], lanes=["deliver"], advanced=["collision_policy"],
             ),
             action("reveal_artifact", "deliver", "show in Finder", [("artifact", "Artifact")], [("artifact", "Artifact")], {}, {}, lanes=["deliver"]),
             action(
@@ -1428,8 +1548,6 @@ class WorkshedService:
         return normalized, errors, sorted_steps
 
     def _toolchains_for_block(self, type_id: str, params: dict[str, Any] | None = None) -> list[str]:
-        if type_id == "register_model" and params and params.get("test_when_finished") is True:
-            return ["mlx-train"]
         if type_id in {"train_dpo", "logits_distill", "evaluate_lm", "compare_models"}:
             return ["hf-posttrain", "evaluation"] if type_id in {"evaluate_lm", "compare_models"} else ["hf-posttrain"]
         if type_id in {"evaluate_loss", "benchmark_model", "quality_gate"}:
@@ -1437,6 +1555,120 @@ class WorkshedService:
         if type_id in {"train_sft", "train_lora", "train_qlora", "train_dora", "train_full", "fuse_adapter", "quantize_mlx", "generate_teacher_responses", "response_distill"}:
             return ["mlx-train"]
         return []
+
+    def _cached_huggingface_config(self, reference: str, revision: str = "") -> Path | None:
+        if "://" in reference or reference.startswith(("/", ".")) or "/" not in reference:
+            return None
+        cache_roots: list[Path] = []
+        for env_name in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
+            configured = str(os.environ.get(env_name, "")).strip()
+            if configured:
+                cache_roots.append(Path(configured).expanduser())
+        hf_home = str(os.environ.get("HF_HOME", "")).strip()
+        if hf_home:
+            cache_roots.append(Path(hf_home).expanduser() / "hub")
+        cache_roots.append(Path.home() / ".cache" / "huggingface" / "hub")
+
+        repo_dir_name = f"models--{reference.replace('/', '--')}"
+        seen_roots: set[str] = set()
+        for cache_root in cache_roots:
+            cache_key = str(cache_root)
+            if cache_key in seen_roots:
+                continue
+            seen_roots.add(cache_key)
+            repo_dir = cache_root / repo_dir_name
+            snapshots = repo_dir / "snapshots"
+            if not snapshots.is_dir():
+                continue
+            commit = ""
+            if revision:
+                ref_path = repo_dir / "refs" / revision
+                if ref_path.is_file():
+                    with suppress(OSError):
+                        commit = ref_path.read_text(encoding="utf-8").strip()
+                if not commit and (snapshots / revision / "config.json").is_file():
+                    commit = revision
+            else:
+                main_ref = repo_dir / "refs" / "main"
+                if main_ref.is_file():
+                    with suppress(OSError):
+                        commit = main_ref.read_text(encoding="utf-8").strip()
+            if commit:
+                config = snapshots / commit / "config.json"
+                if config.is_file():
+                    return config
+            configs = list(snapshots.glob("*/config.json"))
+            if configs:
+                return max(configs, key=lambda item: item.stat().st_mtime)
+        return None
+
+    def _model_quantization_description(
+        self,
+        reference: str,
+        revision: str = "",
+        source_kind: str = "",
+    ) -> str:
+        reference = str(reference or "").strip()
+        if not reference:
+            return ""
+        if source_kind == "managed":
+            with self._lock:
+                artifact = deepcopy(self._artifacts.get(reference))
+            if isinstance(artifact, dict):
+                reference = str(artifact.get("path") or artifact.get("runtime_value") or reference)
+
+        candidate = Path(reference).expanduser()
+        config_path = candidate / "config.json" if candidate.is_dir() else None
+        if candidate.is_file() and candidate.name == "config.json":
+            config_path = candidate
+        if config_path is None or not config_path.is_file():
+            config_path = self._cached_huggingface_config(reference, revision)
+
+        if config_path is not None and config_path.is_file():
+            config = self._read_json(config_path, {})
+            if isinstance(config, dict):
+                mlx_quantization = config.get("quantization")
+                if isinstance(mlx_quantization, dict) and mlx_quantization:
+                    bits = mlx_quantization.get("bits") or mlx_quantization.get("n_bits")
+                    detail = f"{bits}-bit MLX-quantized" if bits else "MLX-quantized"
+                    return f"an already {detail} model"
+                other_quantization = config.get("quantization_config")
+                if isinstance(other_quantization, dict) and other_quantization:
+                    method = str(other_quantization.get("quant_method") or "").strip()
+                    bits = other_quantization.get("bits") or other_quantization.get("w_bit")
+                    label = method.upper() if method else "pre-quantized"
+                    detail = f"{bits}-bit {label}" if bits else label
+                    return f"an already quantized {detail} model"
+
+        # Repositories that identify themselves as quantized are rejected even
+        # when their snapshot is not cached yet; the runner will not try to
+        # interpret an MLX export as original Hugging Face weights.
+        if "mlx" in reference.lower() and re.search(r"(?:^|[-_])\d{1,2}[-_]?bit(?:$|[-_/])", reference, re.IGNORECASE):
+            return "an already quantized MLX model"
+        return ""
+
+    def _quantized_model_input(self, step: dict[str, Any], steps: list[dict[str, Any]]) -> tuple[str, str] | None:
+        binding = (step.get("input_bindings") or {}).get("model")
+        if not isinstance(binding, dict):
+            return None
+        reference = ""
+        revision = ""
+        source_kind = ""
+        if binding.get("kind") == "literal":
+            reference = str(binding.get("value") or "").strip()
+        elif binding.get("kind") == "edge":
+            source_id = str(binding.get("step_id", ""))
+            source_step = next((item for item in steps if str(item.get("id", "")) == source_id), None)
+            if not isinstance(source_step, dict) or source_step.get("type_id") != "load_model":
+                return None
+            params = source_step.get("resolved_params") if isinstance(source_step.get("resolved_params"), dict) else {}
+            reference = str(params.get("ref") or "").strip()
+            revision = str(params.get("revision") or "").strip()
+            source_kind = str(params.get("source_kind") or "")
+        else:
+            return None
+        description = self._model_quantization_description(reference, revision, source_kind)
+        return (reference, description) if description else None
 
     def preflight(self, payload: dict[str, Any]) -> dict[str, Any]:
         order = payload.get("work_order") if isinstance(payload, dict) else None
@@ -1446,6 +1678,43 @@ class WorkshedService:
         if not isinstance(order, dict):
             return {"ok": False, "errors": [{"code": "work_order", "message": "Work order is required."}], "warnings": []}
         normalized, errors, steps = self._normalize_order(order)
+        for step in steps:
+            if step.get("type_id") != "quantize_mlx":
+                continue
+            quantized_input = self._quantized_model_input(step, steps)
+            if quantized_input:
+                reference, description = quantized_input
+                errors.append(
+                    WorkOrderError(
+                        "model_already_quantized",
+                        f"The selected model '{reference}' is {description}. MLX Quantize requires original, unquantized Hugging Face weights. Select the model's original base repository or local source folder.",
+                        str(step.get("block_id", "")),
+                    )
+                )
+        mlx_steps = [
+            step
+            for step in steps
+            if (
+                str(step.get("type_id", "")) in _MLX_COMPUTE_BLOCKS
+                and str(step.get("runner_id", "")) == "mlx_local"
+            )
+            or (
+                str(step.get("type_id", "")) == "register_model"
+                and bool((step.get("resolved_params") or {}).get("test_when_finished", False))
+            )
+        ]
+        if mlx_steps and self._runner is None:
+            mlx_runtime = self._probe_mlx_runtime()
+            if not mlx_runtime.get("available"):
+                detail = str(mlx_runtime.get("reason", "Metal is unavailable."))
+                for step in mlx_steps:
+                    errors.append(
+                        WorkOrderError(
+                            "mlx_unavailable",
+                            f"This work order needs the app's MLX/Metal runtime, but it is unavailable: {detail}",
+                            str(step.get("block_id", "")),
+                        )
+                    )
         warnings: list[dict[str, str]] = []
         profiles = sorted({profile for step in steps for profile in step.get("toolchain_profiles", [])})
         if any(step["type_id"] == "train_full" for step in steps):
@@ -2570,6 +2839,11 @@ class WorkshedService:
             model = str(inputs["model"]).strip()
             if not model:
                 raise ValueError("MLX quantization requires a resolved model input port.")
+            quantization = self._model_quantization_description(model)
+            if quantization:
+                raise ValueError(
+                    f"The selected model is {quantization}. MLX Quantize requires original, unquantized Hugging Face weights. Select the model's original base repository or local source folder."
+                )
             output = workspace / f"{_slug(str(params['output_name']))}-mlx"
             command = [
                 self._toolchain_interpreter(step, "mlx-train"),
@@ -2608,20 +2882,11 @@ class WorkshedService:
             if bool(params.get("test_when_finished", False)):
                 if not model_path:
                     raise ValueError("The saved model path is empty; the smoke test cannot load it.")
-                command = [
-                    self._toolchain_interpreter(step, "mlx-train"),
-                    "-m", "mlx_lm.generate",
-                    "--model", model_path,
-                    "--prompt", "Reply with the word ready.",
-                    "--max-tokens", "16",
-                ]
-                runner_projection = {"argv": command}
-                self._run_command(run_id, command, workspace)
-                smoke_test = {
-                    "status": "passed",
-                    "prompt": "Reply with the word ready.",
-                    "max_tokens": 16,
-                    "runner": "mlx_lm.generate",
+                smoke = self._run_serving_smoke_test(run_id, model_path, workspace)
+                smoke_test = {key: value for key, value in smoke.items() if key not in {"argv", "endpoint"}}
+                runner_projection = {
+                    "argv": smoke.get("argv", []),
+                    "endpoint": smoke.get("endpoint", ""),
                 }
             return {
                 "id": artifact_id,
@@ -2635,6 +2900,200 @@ class WorkshedService:
         if type_id in {"repeat", "for_each", "if_else", "retry", "stop"}:
             raise RuntimeError(f"Structured control runner for '{type_id}' is not available in this manager build.")
         raise RuntimeError(f"Unsupported Workshed block: {type_id}")
+
+    def _run_serving_smoke_test(self, run_id: str, model_path: str, cwd: Path) -> dict[str, Any]:
+        """Validate the final model through the same local server Model Settings starts."""
+
+        if not Path(model_path).is_dir():
+            raise RuntimeError("The saved model folder does not exist; the serving smoke test cannot start.")
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.bind(("127.0.0.1", 0))
+            port = int(listener.getsockname()[1])
+
+        host = "127.0.0.1"
+        endpoint = f"http://{host}:{port}"
+        if getattr(sys, "frozen", False):
+            command = [
+                self.python_executable,
+                "--token-workshed-serve",
+                model_path,
+                "--host",
+                host,
+                "--port",
+                str(port),
+            ]
+        else:
+            command = [
+                self.python_executable,
+                "-m",
+                "vllm_mlx.cli",
+                "serve",
+                model_path,
+                "--host",
+                host,
+                "--port",
+                str(port),
+            ]
+
+        process = subprocess.Popen(
+            command,
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            start_new_session=True,
+        )
+        output_tail: deque[str] = deque(maxlen=24)
+        output_tail_lock = threading.Lock()
+
+        def read_output() -> None:
+            stream = process.stdout
+            if stream is None:
+                return
+            try:
+                for line in stream:
+                    message = str(_redact(line.rstrip()))
+                    if message:
+                        with output_tail_lock:
+                            output_tail.append(message[-1200:])
+                        self._event(run_id, "log", message=message[-1200:])
+            except (OSError, ValueError):
+                return
+
+        reader = threading.Thread(target=read_output, daemon=True, name=f"workshed-serve-log-{run_id[:8]}")
+        with self._lock:
+            self._processes[run_id] = process
+        reader.start()
+        started = time.monotonic()
+        deadline = started + _APP_SERVE_SMOKE_TIMEOUT_SECONDS
+
+        def detail_text() -> str:
+            with output_tail_lock:
+                recent_lines = list(output_tail)[-8:]
+            return " | ".join(recent_lines)[-5000:]
+
+        def request_json(
+            path: str,
+            payload: dict[str, Any] | None = None,
+            *,
+            timeout: float = 3,
+        ) -> dict[str, Any]:
+            data = json.dumps(payload).encode("utf-8") if payload is not None else None
+            request = urllib.request.Request(
+                f"{endpoint}{path}",
+                data=data,
+                headers={"Content-Type": "application/json"} if data is not None else {},
+                method="POST" if data is not None else "GET",
+            )
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                decoded = json.loads(response.read().decode("utf-8"))
+            if not isinstance(decoded, dict):
+                raise RuntimeError("The local serving API returned an invalid JSON response.")
+            return decoded
+
+        try:
+            served_models: list[dict[str, Any]] = []
+            last_probe_error = ""
+            while time.monotonic() < deadline:
+                if self._cancel.get(run_id, threading.Event()).is_set():
+                    raise RuntimeError("Cancellation requested.")
+                return_code = process.poll()
+                if return_code is not None:
+                    reader.join(timeout=1.0)
+                    details = detail_text()
+                    suffix = f" Details: {details}" if details else " No server diagnostics were emitted."
+                    raise RuntimeError(
+                        f"The app serving engine exited before readiness (exit code {return_code}).{suffix}"
+                    )
+                try:
+                    payload = request_json("/v1/models")
+                    values = payload.get("data")
+                    if isinstance(values, list):
+                        served_models = [item for item in values if isinstance(item, dict)]
+                    if served_models:
+                        break
+                except (OSError, ValueError, urllib.error.URLError) as exc:
+                    last_probe_error = str(_redact(exc))[:500]
+                time.sleep(0.4)
+            else:
+                details = detail_text()
+                suffix = f" Last API probe: {last_probe_error}." if last_probe_error else ""
+                if details:
+                    suffix += f" Server output: {details}"
+                raise RuntimeError(
+                    f"The app serving engine did not become ready within {_APP_SERVE_SMOKE_TIMEOUT_SECONDS} seconds.{suffix}"
+                )
+
+            served_model = str(served_models[0].get("id", "")).strip()
+            if not served_model:
+                raise RuntimeError("The app serving API reported readiness without a model id.")
+            completion = request_json(
+                "/v1/chat/completions",
+                {
+                    "model": served_model,
+                    "messages": [{"role": "user", "content": "Reply with the word ready."}],
+                    "temperature": 0,
+                    "max_tokens": 8,
+                    "stream": False,
+                },
+                timeout=120,
+            )
+            choices = completion.get("choices")
+            if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                raise RuntimeError("The app serving API returned no completion choices.")
+            message = choices[0].get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, list):
+                response_text = "".join(
+                    str(part.get("text", ""))
+                    for part in content
+                    if isinstance(part, dict)
+                ).strip()
+            else:
+                response_text = str(content or "").strip()
+            if not response_text:
+                raise RuntimeError("The app server loaded the model but returned an empty chat completion.")
+            return {
+                "status": "passed",
+                "runner": "vllm_mlx.openai_chat_completions",
+                "engine": "vllm-mlx",
+                "served_model": served_model,
+                "prompt": "Reply with the word ready.",
+                "max_tokens": 8,
+                "response_chars": len(response_text),
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+                "scope": "Model loaded by the app serving engine and generated through its local OpenAI-compatible chat API.",
+                "argv": command,
+                "endpoint": endpoint,
+            }
+        except urllib.error.HTTPError as exc:
+            body = ""
+            with suppress(Exception):
+                body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"The app serving API returned HTTP {exc.code}: {str(_redact(body))[:1200]}"
+            ) from exc
+        finally:
+            if process.poll() is None:
+                with suppress(ProcessLookupError, OSError):
+                    os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    with suppress(ProcessLookupError, OSError):
+                        os.killpg(process.pid, signal.SIGKILL)
+                    with suppress(Exception):
+                        process.wait(timeout=5)
+            if process.stdout is not None:
+                with suppress(Exception):
+                    process.stdout.close()
+            reader.join(timeout=1.0)
+            with self._lock:
+                if self._processes.get(run_id) is process:
+                    self._processes.pop(run_id, None)
 
     def _run_command(self, run_id: str, command: list[str], cwd: Path) -> None:
         self._event(run_id, "command_started", executable=command[0], args=command[1:])

@@ -28,6 +28,7 @@ import threading
 import time
 import uuid
 import webbrowser
+from collections import deque
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
@@ -797,6 +798,20 @@ def _looks_like_vllm_serve_process(command: str) -> bool:
     return "--token-workshed-serve" in normalized or (
         "vllm_mlx.cli" in normalized and "serve" in normalized
     )
+
+
+def _redact_model_server_log(value: str) -> str:
+    """Keep useful model startup diagnostics while removing common credentials."""
+
+    text = str(value or "")
+    text = re.sub(r"(?i)bearer\s+[A-Za-z0-9._~+/-]+", "Bearer [redacted]", text)
+    text = re.sub(r"(?i)\bhf_[A-Za-z0-9]{16,}\b", "[redacted HF token]", text)
+    text = re.sub(
+        r"(?i)(token|secret|password|api[_-]?key)\s*[:=]\s*[^\s,;]+",
+        r"\1=[redacted]",
+        text,
+    )
+    return text[-1200:]
 
 
 def _looks_like_desktop_manager_process(command: str) -> bool:
@@ -1864,16 +1879,21 @@ def _merge_and_rank_search_results(
         if existing_source != item_source and item_source:
             existing["source"] = "hybrid"
 
-    ordered.sort(
-        key=lambda x: (
-            -int(x.get("source_priority", 0) or 0),
-            -(1 if openclaw_mode and bool(x.get("openclaw_recommended")) else 0),
-            -int(x.get("query_score", 0) or 0),
-            -int(x.get("downloads", 0) or 0),
-            -int(x.get("likes", 0) or 0),
-            str(x.get("id", "") or "").lower(),
+    def search_sort_key(item: dict[str, Any]) -> tuple[Any, ...]:
+        query_score = int(item.get("query_score", 0) or 0)
+        recommended = int(
+            openclaw_mode and bool(item.get("openclaw_recommended"))
         )
-    )
+        local = int(bool(item.get("local")))
+        downloads = int(item.get("downloads", 0) or 0)
+        likes = int(item.get("likes", 0) or 0)
+        model_id = str(item.get("id", "") or "").lower()
+
+        if query_score > 0:
+            return (-query_score, -recommended, -local, -downloads, -likes, model_id)
+        return (-downloads, -likes, -local, -recommended, model_id)
+
+    ordered.sort(key=search_sort_key)
     return ordered[: max(1, int(limit))]
 
 
@@ -3058,18 +3078,56 @@ class LocalModelServerManager:
                 runtime_config=runtime_config,
                 tool_call_parser_override=parser_override,
             )
-            proc = subprocess.Popen(cmd, start_new_session=True)
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            output_tail: deque[str] = deque(maxlen=24)
+            output_lock = threading.Lock()
+
+            def read_startup_output() -> None:
+                stream = proc.stdout
+                if stream is None:
+                    return
+                try:
+                    for raw_line in iter(stream.readline, b""):
+                        line = _redact_model_server_log(
+                            raw_line.decode("utf-8", errors="replace").rstrip()
+                        )
+                        if line:
+                            with output_lock:
+                                output_tail.append(line)
+                except (OSError, ValueError):
+                    return
+
+            output_reader = threading.Thread(
+                target=read_startup_output,
+                daemon=True,
+                name=f"model-start-log-{canonical_model[:24]}",
+            )
+            output_reader.start()
+
+            def startup_diagnostics() -> str:
+                output_reader.join(timeout=0.5)
+                with output_lock:
+                    lines = list(output_tail)[-8:]
+                return " | ".join(lines)[-2400:]
+
             deadline = time.time() + self.startup_timeout_s
             observed_models: list[str] = []
 
             while time.time() < deadline:
                 if proc.poll() is not None:
                     code = proc.returncode
+                    detail = startup_diagnostics()
+                    diagnostic_hint = f" Startup output: {detail}." if detail else " No startup output was captured."
                     return (
                         False,
                         (
                             f"Model '{canonical_model}' process exited before ready "
-                            f"(exit code: {code}) on port {port}."
+                            f"(exit code: {code}) on port {port}.{diagnostic_hint}"
                         ),
                         None,
                     )
@@ -3092,16 +3150,18 @@ class LocalModelServerManager:
                 time.sleep(0.6)
 
             _terminate_process(proc)
+            detail = startup_diagnostics()
             observed_hint = (
                 f" Observed model(s): {', '.join(observed_models[:6])}."
                 if observed_models
                 else ""
             )
+            diagnostic_hint = f" Startup output: {detail}." if detail else ""
             return (
                 False,
                 (
                     f"Model '{canonical_model}' did not become ready within "
-                    f"{self.startup_timeout_s}s on port {port}.{observed_hint}"
+                    f"{self.startup_timeout_s}s on port {port}.{observed_hint}{diagnostic_hint}"
                 ),
                 None,
             )
@@ -4236,38 +4296,19 @@ class LocalModelServerManager:
             return True, f"Deleted local model '{target}'.", models
 
     def search_community_models(
-        self, query: str, limit: int = 24
+        self, query: str, limit: int = 24, *, include_unready: bool = False
     ) -> list[dict[str, Any]]:
-        """Hybrid search for local models + Hugging Face community models."""
+        """Search Hugging Face text-generation models and report MLX readiness."""
         q = query.strip()
         bounded_limit = max(1, min(80, int(limit)))
         openclaw_mode = _is_openclaw_query(q)
 
         try:
-            local_models = sorted(set(self.discover_models()), key=lambda x: x.lower())
-        except Exception:
-            local_models = []
-
-        local_results: list[dict[str, Any]] = []
-        for model_id in local_models:
-            entry = _build_local_search_item(model_id, q)
-            if entry is None:
-                continue
-            if openclaw_mode and bool(entry.get("openclaw_recommended")):
-                entry["source_priority"] = max(
-                    int(entry.get("source_priority", 0) or 0), 4
-                )
-            local_results.append(entry)
-
-        try:
             from huggingface_hub import HfApi
-        except Exception:
-            return _merge_and_rank_search_results(
-                local_results,
-                [],
-                bounded_limit,
-                openclaw_mode=openclaw_mode,
-            )
+        except Exception as exc:
+            raise RuntimeError(
+                "Hugging Face search is unavailable because huggingface_hub is not installed."
+            ) from exc
 
         hf_binding = _load_hf_binding_state()
         hf_token = str(hf_binding.get("token", "") or "").strip()
@@ -4277,11 +4318,11 @@ class LocalModelServerManager:
             # Older huggingface_hub may not accept token in constructor.
             api = HfApi()
 
-        fetch_limit = max(bounded_limit * 6, 60)
+        fetch_limit = min(400, max(bounded_limit * 8, 160))
         list_kwargs: dict[str, Any] = {
             "search": q or None,
             "sort": "downloads",
-            "limit": min(160, fetch_limit),
+            "limit": fetch_limit,
             # Use full metadata so we can reliably detect gated/private models.
             "full": True,
         }
@@ -4314,24 +4355,44 @@ class LocalModelServerManager:
         )
 
         community_results: list[dict[str, Any]] = []
-        local_model_set = set(local_models)
         for item in raw_items:
             model_id = getattr(item, "id", None)
             if not isinstance(model_id, str) or not model_id.strip():
                 continue
             model_id = _canonicalize_model_id(model_id.strip())
-            if not _is_official_developer(model_id):
+            pipeline_tag = getattr(item, "pipeline_tag", None)
+            if pipeline_tag and pipeline_tag not in {
+                "text-generation",
+                "text2text-generation",
+            }:
                 continue
 
-            developer_slug, developer = _normalize_developer_name(model_id)
-            family_key, size_label = _infer_model_family_and_size(model_id)
             tags_raw = getattr(item, "tags", None)
             tags = (
                 [x for x in tags_raw if isinstance(x, str)]
                 if isinstance(tags_raw, list)
                 else []
             )
+            library_name = str(getattr(item, "library_name", "") or "").strip().lower()
+            repo_owner = model_id.split("/", 1)[0].strip().lower()
+            mlx_ready = (
+                repo_owner == "mlx-community"
+                or library_name in {"mlx", "mlx-lm", "mlx_lm"}
+                or any(tag.strip().lower() in {"mlx", "mlx-lm", "mlx_lm"} for tag in tags)
+                or bool(re.search(r"(?:^|[-_])mlx(?:$|[-_])", model_id, re.IGNORECASE))
+            )
+
+            developer_slug, developer = _normalize_developer_name(model_id)
+            family_key, size_label = _infer_model_family_and_size(model_id)
             quant_label = _infer_quantization_label(model_id, tags)
+            pipeline_supported = not pipeline_tag or pipeline_tag == "text-generation"
+            pullable = (
+                mlx_ready
+                and pipeline_supported
+                and quant_label.strip().upper() not in {"GGUF", "GPTQ", "AWQ"}
+            )
+            if not include_unready and not pullable:
+                continue
             capability = _model_capability(model_id)
             query_score = _query_match_score(
                 q,
@@ -4341,9 +4402,6 @@ class LocalModelServerManager:
                 quant_label,
                 developer_slug,
             )
-            if q and query_score <= 0:
-                continue
-
             community_results.append(
                 {
                     "id": model_id,
@@ -4361,7 +4419,11 @@ class LocalModelServerManager:
                     "quantization_label": quant_label,
                     "downloads": int(getattr(item, "downloads", 0) or 0),
                     "likes": int(getattr(item, "likes", 0) or 0),
-                    "pipeline_tag": getattr(item, "pipeline_tag", None),
+                    "pipeline_tag": pipeline_tag,
+                    "library_name": library_name,
+                    "mlx_ready": mlx_ready,
+                    "pullable": pullable,
+                    "model_format": "MLX" if mlx_ready else (library_name or "Hugging Face"),
                     "last_modified": (
                         str(getattr(item, "last_modified", ""))
                         if getattr(item, "last_modified", None) is not None
@@ -4369,7 +4431,7 @@ class LocalModelServerManager:
                     ),
                     "private": bool(getattr(item, "private", False)),
                     "gated": bool(getattr(item, "gated", False)),
-                    "local": model_id in local_model_set,
+                    "local": False,
                     "deep_thinking": bool(capability.get("deep_thinking")),
                     "reasoning_parser": capability.get("reasoning_parser"),
                     "source": "community",
@@ -4389,12 +4451,23 @@ class LocalModelServerManager:
             if len(community_results) >= max(bounded_limit * 2, 60):
                 break
 
-        return _merge_and_rank_search_results(
-            local_results,
+        ranked_results = _merge_and_rank_search_results(
+            [],
             community_results,
-            bounded_limit,
+            max(len(community_results), bounded_limit),
             openclaw_mode=openclaw_mode,
         )
+        if include_unready:
+            ranked_results.sort(
+                key=lambda result: (
+                    not bool(result.get("pullable")),
+                    -int(result.get("query_score", 0) or 0),
+                    -int(result.get("downloads", 0) or 0),
+                    -int(result.get("likes", 0) or 0),
+                    str(result.get("id", "")).casefold(),
+                )
+            )
+        return ranked_results[:bounded_limit]
 
     def _set_community_job_locked(self, **values: Any) -> dict[str, Any]:
         payload = dict(self._community_job or {})
@@ -5819,10 +5892,16 @@ Examples:
         request: Request,
         q: str = "",
         limit: int = 24,
+        include_unready: bool = False,
     ) -> dict[str, Any]:
         _enforce_manager_auth(request, manager_api_token)
         try:
-            results = await run_in_threadpool(manager.search_community_models, q, limit)
+            results = await run_in_threadpool(
+                manager.search_community_models,
+                q,
+                limit,
+                include_unready=include_unready,
+            )
             local_count = sum(1 for item in results if bool(item.get("local")))
             community_count = sum(
                 1
