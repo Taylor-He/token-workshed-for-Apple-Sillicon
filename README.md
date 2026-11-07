@@ -1,5 +1,7 @@
 # Token Workshed
 
+![Token Workshed logo](assets/brand/token-workshed-logo-gray-black.png)
+
 Token Workshed is a native Mac workbench for local MLX models on Apple Silicon.
 In v0.2.0, Workshed can run a 4-bit quantization work order, register the
 resulting model in the local library, and switch to it for chat.
