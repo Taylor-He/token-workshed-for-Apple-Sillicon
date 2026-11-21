@@ -10302,7 +10302,7 @@ impl TokenWorkshedApp {
     }
 
     fn about_page(&self) -> Element<'_, Message> {
-        let native_version = env!("CARGO_PKG_VERSION");
+        let native_version = "NextCore";
         let token_version = empty_dash(&self.token_workshed_version);
         let sglang_version = empty_dash(&self.sglang_version);
         let selected_model = empty_dash(&self.native_state.selected_model);

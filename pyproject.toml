@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "token-workshed-nextcore"
-version = "0.2.1"
+version = "0+nextcore"
 description = "token-workshed NextCore desktop application with SGLang inference"
 readme = "README.md"
 license = {text = "Apache-2.0"}

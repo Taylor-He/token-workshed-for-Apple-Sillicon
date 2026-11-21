@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${1:-0.2.1}"
+VERSION="${1:-NextCore}"
 RUNTIME_VERSION="0.5.22"
 SGLANG_COMMIT="baa9befa381511cd4d56f83980951e5a45fffc6d"
 PYTHON_BOOTSTRAP_VERSION="${3:-3.12.8}"
@@ -14,8 +14,8 @@ OUT_PKG="$ROOT_DIR/dist/token-workshed NextCore.pkg"
 UPDATE_OUT_PKG="$ROOT_DIR/dist/token-workshed NextCore Update.pkg"
 PYTHON_PKG_URL="https://www.python.org/ftp/python/${PYTHON_BOOTSTRAP_VERSION}/python-${PYTHON_BOOTSTRAP_VERSION}-macos11.pkg"
 
-if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "Invalid installer version: $VERSION (expected MAJOR.MINOR.PATCH)." >&2
+if [[ "$VERSION" != "NextCore" && ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Invalid installer version: $VERSION (expected NextCore or MAJOR.MINOR.PATCH)." >&2
   exit 2
 fi
 
@@ -274,7 +274,7 @@ rsync -a \
   --exclude "/RELEASE_NOTES_v0.1.5.md" \
   --exclude "/RELEASE_NOTES_v0.1.5_SHORT.md" \
   --exclude "/RELEASE_NOTES_v0.2.0.md" \
-  --exclude "/RELEASE_NOTES_v0.2.1.md" \
+  --exclude "/RELEASE_NOTES_NEXTCORE.md" \
   --include "/docs/" \
   --include "/docs/nextcore/" \
   --include "/docs/nextcore/***" \

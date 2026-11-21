@@ -7,9 +7,9 @@
 </div>
 
 <p align="center">
-  <a href="https://github.com/Taylor-He/token-workshed-nextcore/releases/latest">Latest release</a>
+  <a href="https://github.com/Taylor-He/token-workshed-for-Apple-Sillicon/releases/latest">Latest release</a>
   · <a href="docs/nextcore/README.md">Documentation</a>
-  · <a href="https://github.com/Taylor-He/token-workshed-nextcore/issues">Report an issue</a>
+  · <a href="https://github.com/Taylor-He/token-workshed-for-Apple-Sillicon/issues">Report an issue</a>
 </p>
 
 NextCore keeps models and Agent data on the Mac or RoboServer you choose. Its
@@ -19,10 +19,10 @@ vLLM-MLX fallback.
 
 ## Download
 
-- [Full installer](https://github.com/Taylor-He/token-workshed-nextcore/releases/download/v0.2.1/token-workshed-nextcore-0.2.1-full.pkg) — first installation.
-- [App update](https://github.com/Taylor-He/token-workshed-nextcore/releases/download/v0.2.1/token-workshed-nextcore-0.2.1-update.pkg) — update an existing NextCore installation.
-- [RoboServer 0.1.0 for a remote Mac](https://github.com/Taylor-He/token-workshed-nextcore/releases/download/v0.2.1/token-workshed-roboserver-0.1.0-macos-arm64.zip) — install on the Apple Silicon Mac you want to connect to.
-- [Release notes](RELEASE_NOTES_v0.2.1.md) · [All releases](https://github.com/Taylor-He/token-workshed-nextcore/releases)
+- [Full installer](https://github.com/Taylor-He/token-workshed-for-Apple-Sillicon/releases/download/NextCore/token-workshed-nextcore.pkg) — first installation.
+- [App update](https://github.com/Taylor-He/token-workshed-for-Apple-Sillicon/releases/download/NextCore/token-workshed-nextcore-update.pkg) — update an existing NextCore installation.
+- [RoboServer 0.1.0 for a remote Mac](https://github.com/Taylor-He/token-workshed-for-Apple-Sillicon/releases/download/NextCore/token-workshed-roboserver-0.1.0-macos-arm64.zip) — install on the Apple Silicon Mac you want to connect to.
+- [Release notes](RELEASE_NOTES_NEXTCORE.md) · [All releases](https://github.com/Taylor-He/token-workshed-for-Apple-Sillicon/releases)
 
 **Requirements:** macOS 14 or later on Apple Silicon (`arm64`). The installer
 sets up the pinned SGLang runtime over the network. Model weights are
@@ -55,7 +55,8 @@ Gatekeeper may prevent it from opening normally.
 - Image, video, speech recognition, and speech generation remain unavailable
   until validated for each model and macOS runtime. SGLang-Omni is separate
   and experimental, not a fallback.
-- Saved 0.2.1 training and conversion work orders remain readable, but steps
+- Saved work orders from the separate Token Workshed 0.2.1 version remain
+  readable, but unsupported training and conversion steps
   that NextCore no longer supports are rejected before execution.
 
 ## Build from source
@@ -76,7 +77,7 @@ and [Workshed guide](docs/nextcore/workshed.md).
 ## Project history and attribution
 
 The active NextCore source line is on `main`. Earlier Token Workshed history
-is preserved on [`legacy/pre-nextcore-history`](https://github.com/Taylor-He/token-workshed-nextcore/tree/legacy/pre-nextcore-history).
+is preserved on [`legacy/pre-nextcore-history`](https://github.com/Taylor-He/token-workshed-for-Apple-Sillicon/tree/legacy/pre-nextcore-history).
 Third-party notices and licenses remain with the source; see [NOTICE](NOTICE)
 and [LICENSE](LICENSE).
 

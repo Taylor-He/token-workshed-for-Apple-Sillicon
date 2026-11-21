@@ -19,7 +19,7 @@ COMPANION_APP_NAME="token-workshed NextCore IDE.app"
 COMPANION_APP_PATH="$ROOT_DIR/dist/$COMPANION_APP_NAME"
 APP_BUNDLE_ID="${TOKEN_WORKSHED_APP_BUNDLE_ID:-com.taylorhe.tokenworkshed.nextcore}"
 COMPANION_BUNDLE_ID="${TOKEN_WORKSHED_IDE_BUNDLE_ID:-com.taylorhe.tokenworkshed.nextcore.ide}"
-APP_VERSION="${TOKEN_WORKSHED_VERSION:-0.2.1}"
+APP_VERSION="${TOKEN_WORKSHED_VERSION:-NextCore}"
 COMPANION_MACOS_DIR="$COMPANION_APP_PATH/Contents/MacOS"
 COMPANION_RESOURCES_DIR="$COMPANION_APP_PATH/Contents/Resources"
 NATIVE_UI_SRC="${TOKEN_WORKSHED_NATIVE_UI_SOURCE_BIN:-$ROOT_DIR/native-ui/target/release/token-workshed-native-ui}"
@@ -27,8 +27,8 @@ NATIVE_UI_DEST="$UI_HELPER_MACOS_DIR/token-workshed-native-ui"
 LAUNCHER_SRC="$ROOT_DIR/native-ui/src/macos_app_launcher.swift"
 BACKUP_DIR="$ROOT_DIR/build/app-backups"
 
-if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "Invalid app version: $APP_VERSION (expected MAJOR.MINOR.PATCH)." >&2
+if [[ "$APP_VERSION" != "NextCore" && ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Invalid app version: $APP_VERSION (expected NextCore or MAJOR.MINOR.PATCH)." >&2
   exit 2
 fi
 

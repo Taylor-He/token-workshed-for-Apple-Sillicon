@@ -1,13 +1,13 @@
-# Token Workshed NextCore 0.2.1
+# Token Workshed NextCore
 
 First NextCore release: a native local AI workbench and in-app Agent for Apple
 Silicon Macs, with optional remote model serving through RoboServer.
 
 ## Downloads
 
-- **Full installer** — [token-workshed-nextcore-0.2.1-full.pkg](https://github.com/Taylor-He/token-workshed-nextcore/releases/download/v0.2.1/token-workshed-nextcore-0.2.1-full.pkg)
-- **Update installer** — [token-workshed-nextcore-0.2.1-update.pkg](https://github.com/Taylor-He/token-workshed-nextcore/releases/download/v0.2.1/token-workshed-nextcore-0.2.1-update.pkg)
-- **Remote server app** — [RoboServer 0.1.0 for Apple Silicon macOS](https://github.com/Taylor-He/token-workshed-nextcore/releases/download/v0.2.1/token-workshed-roboserver-0.1.0-macos-arm64.zip)
+- **Full installer** — [token-workshed-nextcore.pkg](https://github.com/Taylor-He/token-workshed-for-Apple-Sillicon/releases/download/NextCore/token-workshed-nextcore.pkg)
+- **Update installer** — [token-workshed-nextcore-update.pkg](https://github.com/Taylor-He/token-workshed-for-Apple-Sillicon/releases/download/NextCore/token-workshed-nextcore-update.pkg)
+- **Remote server app** — [RoboServer 0.1.0 for Apple Silicon macOS](https://github.com/Taylor-He/token-workshed-for-Apple-Sillicon/releases/download/NextCore/token-workshed-roboserver-0.1.0-macos-arm64.zip)
 
 ## What’s included
 
