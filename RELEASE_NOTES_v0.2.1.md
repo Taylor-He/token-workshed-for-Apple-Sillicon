@@ -1,41 +1,51 @@
-# token-workshed NextCore 0.2.1
+# Token Workshed NextCore 0.2.1
 
-NextCore is the SGLang-based macOS Apple Silicon line of Token Workshed. This
-build targets macOS 14 or later and Python 3.12.
+First NextCore release: a native local AI workbench and in-app Agent for Apple
+Silicon Macs, with optional remote model serving through RoboServer.
 
-## Highlights
+## Downloads
 
-- Pins SGLang Runtime v0.5.22 at commit
-  `baa9befa381511cd4d56f83980951e5a45fffc6d` for local model serving.
-- Keeps the OpenAI-compatible model, chat, and completion routes while
-  restricting Agent tools to authenticated NextCore in-app chat.
-- Adds the app-managed Agent loop with web search and fetch, terminal and file
-  tools, browser and computer-use controls, memories, Skills, MCP connections,
-  scheduled tasks, and local activity records.
-- Adds separate local and RoboServer runtime targets. Remote management uses
-  SSH host-key verification and a tunnel to the server's private API.
-- Routes Workshed teacher generation, benchmarks, and evaluation through
-  SGLang. Loss scoring uses the temporary Torch/MPS SGLang backend. Retired
-  training and non-SGLang conversion steps remain readable in saved work orders
-  but are rejected before execution.
-- Uses a white app canvas with neutral gray message and history surfaces.
+- **Full installer** — [token-workshed NextCore.pkg](https://github.com/Taylor-He/token-workshed-nextcore/releases/download/v0.2.1/token-workshed%20NextCore.pkg)
+- **Update installer** — [token-workshed NextCore Update.pkg](https://github.com/Taylor-He/token-workshed-nextcore/releases/download/v0.2.1/token-workshed%20NextCore%20Update.pkg)
 
-## Supported and unavailable features
+## What’s included
 
-- Text serving targets Apple Silicon through the pinned SGLang runtime.
-- Image, video, ASR, and TTS capabilities remain unavailable until validated
-  for each model and macOS runtime. SGLang-Omni remains a separate experimental
-  runtime and is not a fallback.
-- No model execution falls back to vLLM-MLX.
+- SGLang Runtime `v0.5.22`, pinned to commit
+  `baa9befa381511cd4d56f83980951e5a45fffc6d`, with Python 3.12 on macOS 14+
+  Apple Silicon.
+- Native chat, streaming, completions, and the existing OpenAI-compatible
+  inference routes.
+- An app-owned Agent for web search and reading, files, terminal, browser,
+  computer use, MCP connections, memories, and Skills. Agent tools are only
+  available from authenticated NextCore in-app chat.
+- Optional RoboServer connection to another Apple Silicon Mac. SSH host-key
+  verification and a private SSH tunnel protect remote management access.
+- SGLang-based teacher generation, benchmarks, and evaluation. Loss scoring
+  uses a temporary SGLang Torch/MPS backend.
+- Independent NextCore application identity and data directory so it can
+  coexist with the earlier Token Workshed app.
 
-## Validation
+## Requirements and first launch
 
-- CI product-contract set covering NextCore Agent/runtime, RoboServer transfer,
-  model management, Workshed execution, APIs, MCP, and security: 506 passed.
-- Native UI unit tests: 58 passed; release build and formatting check passed.
-- Python undefined-name and unused-variable checks passed for the app and the
-  focused test modules.
-- The packaged app bundle verifies with `codesign --verify --deep --strict`.
-  The app and installer are not Developer ID signed or notarized on this build.
-- Package output is a local release artifact. It was built but not installed or
-  published to GitHub.
+- macOS 14 or later on Apple Silicon (`arm64`).
+- Internet access during installation to install the pinned SGLang runtime;
+  model weights are downloaded separately and are not bundled.
+- The installer can use an existing Python 3.12 installation or install the
+  Python 3.12.8 bootstrap from python.org.
+
+## Distribution status
+
+These packages are **not signed with a Developer ID and are not notarized**.
+macOS Gatekeeper may block them from opening normally. The app bundle is
+locally code-signature verified, but this does not replace Developer ID
+signing or notarization.
+
+## Runtime limits
+
+- Text inference uses SGLang. There is no vLLM-MLX inference fallback.
+- Image, video, ASR, and TTS are unavailable until verified for each model and
+  runtime. SGLang-Omni is separate and experimental.
+- The OpenAI-compatible API, ACP, MCP, and IDE integrations provide inference;
+  they cannot invoke NextCore's in-app Agent tools.
+- Legacy training and conversion work orders remain readable. Unsupported
+  operations are rejected before execution.

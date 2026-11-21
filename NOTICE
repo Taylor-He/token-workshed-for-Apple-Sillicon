@@ -1,10 +1,10 @@
-Token Workshed
+Token Workshed NextCore
 Copyright 2026 Taylor He
 
-Licensed under the Apache License, Version 2.0.
+NextCore includes modified portions of the prior Token Workshed codebase,
+including portions derived from vllm-mlx. Original copyright notices and
+applicable license terms remain with their respective files and bundled
+components. NextCore model execution uses SGLang Runtime; vLLM-MLX is not an
+inference backend in this project.
 
-This project is derived from vllm-mlx.
-Original project copyright belongs to its respective copyright holders.
-Modifications in this repository are copyright 2026 Taylor He.
-
-See the LICENSE file for the full license text.
+See LICENSE and the bundled component license files for license terms.
