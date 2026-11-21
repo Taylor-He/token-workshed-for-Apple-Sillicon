@@ -21,6 +21,7 @@ vLLM-MLX fallback.
 
 - [Full installer](https://github.com/Taylor-He/token-workshed-nextcore/releases/download/v0.2.1/token-workshed%20NextCore.pkg) — first installation.
 - [App update](https://github.com/Taylor-He/token-workshed-nextcore/releases/download/v0.2.1/token-workshed%20NextCore%20Update.pkg) — update an existing NextCore installation.
+- [RoboServer for a remote Mac](https://github.com/Taylor-He/token-workshed-nextcore/releases/download/v0.2.1/token-workshed-roboserver-v0.2.1-macos-arm64.zip) — install on the Apple Silicon Mac you want to connect to.
 - [Release notes](RELEASE_NOTES_v0.2.1.md) · [All releases](https://github.com/Taylor-He/token-workshed-nextcore/releases)
 
 **Requirements:** macOS 14 or later on Apple Silicon (`arm64`). The installer
