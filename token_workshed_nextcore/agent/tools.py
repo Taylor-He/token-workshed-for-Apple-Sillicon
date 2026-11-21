@@ -531,6 +531,14 @@ def _safe_child_env() -> dict[str, str]:
     return safe
 
 
+def _terminal_shell_path() -> str:
+    """Prefer zsh on macOS and fall back to an available POSIX shell."""
+    for candidate in ("/bin/zsh", "/bin/bash", "/bin/sh"):
+        if Path(candidate).is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return "/bin/sh"
+
+
 def _terminal(args: dict[str, Any], cancel_event) -> str:
     command = str(args.get("command") or "")
     if not command.strip() or len(command) > 10_000:
@@ -543,7 +551,7 @@ def _terminal(args: dict[str, Any], cancel_event) -> str:
     process = subprocess.Popen(
         # `-f` avoids loading user/global startup files that could reintroduce
         # credentials filtered from the inherited environment.
-        ["/bin/zsh", "-f", "-c", command],
+        [_terminal_shell_path(), "-f", "-c", command],
         cwd=str(Path.home()),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

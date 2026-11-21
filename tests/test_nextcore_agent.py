@@ -1309,6 +1309,9 @@ def test_terminal_rejects_privilege_escalation(command: str) -> None:
 def test_terminal_child_environment_filters_credentials_and_keeps_shell_basics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from token_workshed_nextcore.agent.computer_use import cua_backend
+
+    monkeypatch.setattr(cua_backend, "_is_macos", lambda: True)
     environment = {
         "HOME": "/Users/example",
         "PATH": "/opt/homebrew/bin:/usr/bin:/bin",
@@ -1374,7 +1377,11 @@ def test_terminal_cancel_stops_the_running_process(
         timer.cancel()
 
     assert process_holder
-    assert process_holder[0].args[:3] == ["/bin/zsh", "-f", "-c"]
+    assert process_holder[0].args[:3] == [
+        agent_tools._terminal_shell_path(),
+        "-f",
+        "-c",
+    ]
     assert process_holder[0].poll() is not None
     assert time.monotonic() - original_monotonic < 3
 
