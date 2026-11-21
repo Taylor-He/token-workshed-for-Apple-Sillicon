@@ -1,0 +1,109 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "token-workshed-nextcore"
+version = "0.2.1"
+description = "token-workshed NextCore desktop application with SGLang inference"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.12,<3.13"
+authors = [
+    {name = "Token Workshed contributors"}
+]
+keywords = ["llm", "sglang", "apple-silicon", "inference"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    # Required by the pinned SGLang Apple Silicon backend; NextCore does not
+    # call MLX-LM or Transformers directly for inference or training.
+    "mlx>=0.29.0",
+    "mlx-lm>=0.30.5",
+    "transformers>=5.0.0",
+    "tokenizers>=0.19.0",
+    "huggingface-hub>=0.36.0",
+    "numpy>=1.24.0",
+    "pillow>=10.0.0",
+    "tqdm>=4.66.0",
+    "pyyaml>=6.0",
+    "gradio>=4.0.0",
+    "requests>=2.28.0",
+    "tabulate>=0.9.0",
+    # Video processing for VLM
+    "opencv-python>=4.8.0",
+    # Vision processor (required for transformers AutoProcessor)
+    "torchvision>=0.18.0",
+    # Resource monitoring
+    "psutil>=5.9.0",
+    # Server
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    # MCP (Model Context Protocol) support
+    "mcp>=1.0.0",
+    # JSON Schema validation for structured output
+    "jsonschema>=4.0.0",
+    # pytz is required by Gradio but not declared as a dependency.
+    "pytz>=2024.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+ide = [
+    "agent-client-protocol>=0.12.0,<0.13.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/taylorhe/token-workshed"
+
+[project.scripts]
+token-workshed-nextcore = "token_workshed_nextcore.cli:main"
+token-workshed-nextcore-ui = "token_workshed_nextcore.css_svg_ui:main"
+token-workshed-nextcore-desktop = "token_workshed_nextcore.desktop_ui:main"
+token-workshed-nextcore-acp = "token_workshed_nextcore.acp_adapter:main"
+token-workshed-nextcore-mcp = "token_workshed_nextcore.mcp_gateway:main"
+token-workshed-nextcore-omni = "token_workshed_nextcore.omni_runtime:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["token_workshed_nextcore*"]
+
+[tool.setuptools.package-data]
+token_workshed_nextcore = ["agent/third_party/*.txt", "agent/third_party/*.md"]
+
+[tool.black]
+line-length = 88
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+ignore = ["E501", "B905"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"

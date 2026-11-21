@@ -1,0 +1,10 @@
+Token Workshed NextCore
+Copyright 2026 Taylor He
+
+NextCore includes modified portions of the prior Token Workshed codebase,
+including portions derived from vllm-mlx. Original copyright notices and
+applicable license terms remain with their respective files and bundled
+components. NextCore model execution uses SGLang Runtime; vLLM-MLX is not an
+inference backend in this project.
+
+See LICENSE and the bundled component license files for license terms.

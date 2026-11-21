@@ -1,0 +1,10 @@
+[tools]
+python = "3.12"
+
+[tasks.serve]
+description = "Start the Token Workshed NextCore SGLang server"
+run = "python -m token_workshed_nextcore.cli serve ${TOKEN_WORKSHED_MODEL:?Set TOKEN_WORKSHED_MODEL to a model path or repository ID}"
+
+[tasks.test]
+description = "Run tests"
+run = "pytest"

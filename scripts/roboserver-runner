@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+RUNNER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$RUNNER_DIR/source/token_workshed_nextcore/roboserver.py" ]]; then
+  SOURCE_DIR="$RUNNER_DIR/source"
+else
+  SOURCE_DIR="$(cd "$RUNNER_DIR/.." && pwd)"
+fi
+DATA_DIR="${TOKEN_WORKSHED_ROBOSERVER_DATA_DIR:-$HOME/Library/Application Support/token-workshed-roboserver}"
+VENV_PYTHON="$DATA_DIR/runtime/.venv/bin/python3"
+
+if [[ "${1:-}" == "--status" ]]; then
+  LABEL="com.taylorhe.tokenworkshed.roboserver"
+  if /bin/launchctl print "gui/$(/usr/bin/id -u)/$LABEL" >/dev/null 2>&1; then
+    SERVICE_LOADED=true
+  else
+    SERVICE_LOADED=false
+  fi
+  API_CODE="$(/usr/bin/curl --silent --max-time 1 --output /dev/null --write-out '%{http_code}' http://127.0.0.1:17872/api/config 2>/dev/null || true)"
+  if [[ "$API_CODE" == "200" || "$API_CODE" == "401" || "$API_CODE" == "403" ]]; then
+    API_READY=true
+  else
+    API_READY=false
+  fi
+  printf '{"ok":true,"service_loaded":%s,"api_ready":%s,"manager_port":17872,"inference_port":18010}\n' "$SERVICE_LOADED" "$API_READY"
+  exit 0
+fi
+
+BASE_PYTHON="$(command -v python3.12 || true)"
+
+if [[ -z "$BASE_PYTHON" && -x "$SOURCE_DIR/.venv/bin/python" ]]; then
+  if "$SOURCE_DIR/.venv/bin/python" -c 'import sys; raise SystemExit(sys.version_info[:2] != (3, 12))' >/dev/null 2>&1; then
+    BASE_PYTHON="$SOURCE_DIR/.venv/bin/python"
+  fi
+fi
+
+UV_BIN="$(command -v uv || true)"
+for candidate in "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv" /opt/homebrew/bin/uv; do
+  if [[ -z "$UV_BIN" && -x "$candidate" ]]; then
+    UV_BIN="$candidate"
+  fi
+done
+if [[ -z "$BASE_PYTHON" && -n "$UV_BIN" ]]; then
+  BASE_PYTHON="$("$UV_BIN" python find 3.12 2>/dev/null || true)"
+  if [[ -z "$BASE_PYTHON" ]]; then
+    echo "Installing a user-level Python 3.12 runtime with uv…" >&2
+    "$UV_BIN" python install 3.12
+    BASE_PYTHON="$("$UV_BIN" python find 3.12)"
+  fi
+fi
+
+export TOKEN_WORKSHED_ROBOSERVER_RUNNER="${TOKEN_WORKSHED_ROBOSERVER_RUNNER:-$RUNNER_DIR/roboserver-runner}"
+export TOKEN_WORKSHED_ROBOSERVER_DATA_DIR="$DATA_DIR"
+export TOKEN_WORKSHED_NEXTCORE_SOURCE="$SOURCE_DIR"
+export PYTHONPATH="$SOURCE_DIR${PYTHONPATH:+:$PYTHONPATH}"
+
+if [[ -x "$VENV_PYTHON" ]]; then
+  PYTHON_BIN="$VENV_PYTHON"
+elif [[ -x "$SOURCE_DIR/.venv/bin/python" ]]; then
+  PYTHON_BIN="$SOURCE_DIR/.venv/bin/python"
+  export TOKEN_WORKSHED_ROBOSERVER_PYTHON="$PYTHON_BIN"
+else
+  PYTHON_BIN="$BASE_PYTHON"
+  if [[ -z "$PYTHON_BIN" ]]; then
+    echo "RoboServer requires Python 3.12 or uv to install a user-level Python 3.12 runtime." >&2
+    exit 1
+  fi
+fi
+
+if [[ -n "$BASE_PYTHON" ]]; then
+  export TOKEN_WORKSHED_BASE_PYTHON="$BASE_PYTHON"
+fi
+
+exec "$PYTHON_BIN" -m token_workshed_nextcore.roboserver "$@"
