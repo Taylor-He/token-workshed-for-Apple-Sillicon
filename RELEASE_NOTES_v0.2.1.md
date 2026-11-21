@@ -7,7 +7,7 @@ Silicon Macs, with optional remote model serving through RoboServer.
 
 - **Full installer** — [token-workshed NextCore.pkg](https://github.com/Taylor-He/token-workshed-nextcore/releases/download/v0.2.1/token-workshed%20NextCore.pkg)
 - **Update installer** — [token-workshed NextCore Update.pkg](https://github.com/Taylor-He/token-workshed-nextcore/releases/download/v0.2.1/token-workshed%20NextCore%20Update.pkg)
-- **Remote server app** — [token-workshed-roboserver-v0.2.1-macos-arm64.zip](https://github.com/Taylor-He/token-workshed-nextcore/releases/download/v0.2.1/token-workshed-roboserver-v0.2.1-macos-arm64.zip)
+- **Remote server app** — [RoboServer 0.1.0 for Apple Silicon macOS](https://github.com/Taylor-He/token-workshed-nextcore/releases/download/v0.2.1/token-workshed-roboserver-0.1.0-macos-arm64.zip)
 
 ## What’s included
 
