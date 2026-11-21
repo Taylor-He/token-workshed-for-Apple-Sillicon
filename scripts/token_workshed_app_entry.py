@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Desktop app entrypoint for token-workshed macOS .app packaging.
+"""Desktop app entrypoint for Token Workshed NextCore macOS bundle packaging.
 
-Launches token-workshed desktop UI with a default model when no model argument is provided.
+Launches the NextCore desktop UI with a default model when no model is provided.
 """
 
 from __future__ import annotations
@@ -66,6 +66,6 @@ if __name__ == "__main__":
 
     _consume_ide_deep_link()
 
-    from vllm_mlx.desktop_ui import main
+    from token_workshed_nextcore.desktop_ui import main
 
     main()

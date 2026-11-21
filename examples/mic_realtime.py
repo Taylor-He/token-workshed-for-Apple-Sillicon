@@ -61,7 +61,7 @@ class RealtimeTranscriber:
 
     def load_model(self):
         """Load the STT model."""
-        from vllm_mlx.audio.stt import STTEngine
+        from token_workshed_nextcore.audio.stt import STTEngine
         print(f"Loading model: {self.model_name}")
         self.engine = STTEngine(self.model_name)
         self.engine.load()

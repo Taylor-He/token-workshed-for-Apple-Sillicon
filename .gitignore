@@ -16,6 +16,9 @@ downloads/
 eggs/
 .eggs/
 lib/
+# OpenClaw's vendored build helpers are source, despite the generic lib/ rule.
+!integrations/cypherclaw/scripts/lib/
+!integrations/cypherclaw/scripts/lib/**
 lib64/
 parts/
 sdist/
@@ -125,6 +128,10 @@ logs/
 tmp/
 temp/
 *.tmp
+
+# OpenClaw has a real source package named "env"; do not hide it as a venv.
+!integrations/cypherclaw/packages/agent-core/src/harness/env/
+!integrations/cypherclaw/packages/agent-core/src/harness/env/**
 
 # MLX cache
 .mlx_cache/

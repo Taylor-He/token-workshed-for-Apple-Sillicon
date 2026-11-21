@@ -10,7 +10,7 @@ including image understanding and visual question answering.
 import sys
 from pathlib import Path
 
-from vllm_mlx.models import MLXMultimodalLM
+from token_workshed_nextcore.models import MLXMultimodalLM
 
 
 def main():

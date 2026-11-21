@@ -211,6 +211,18 @@ pub struct Theme {
     pub layer: cosmic_theme::Layer,
 }
 
+impl crate::iced::widget::float::Catalog for Theme {
+    type Class<'a> = crate::iced::widget::float::StyleFn<'a, Self>;
+
+    fn default<'a>() -> Self::Class<'a> {
+        Box::new(|_| crate::iced::widget::float::Style::default())
+    }
+
+    fn style(&self, class: &Self::Class<'_>) -> crate::iced::widget::float::Style {
+        class(self)
+    }
+}
+
 impl Theme {
     #[inline]
     pub fn cosmic(&self) -> &cosmic_theme::Theme {

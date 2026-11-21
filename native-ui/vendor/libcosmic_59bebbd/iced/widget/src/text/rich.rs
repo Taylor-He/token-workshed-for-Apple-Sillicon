@@ -1,8 +1,9 @@
 use crate::core::alignment;
 use crate::core::layout;
-use crate::core::mouse;
+use crate::core::mouse::{self, click};
 use crate::core::renderer;
 use crate::core::text::{Paragraph, Span};
+use crate::core::widget::text::HasSelectableText;
 use crate::core::widget::text::{
     self, Alignment, Catalog, Ellipsize, LineHeight, Shaping, Style, StyleFn,
     Wrapping,
@@ -10,8 +11,9 @@ use crate::core::widget::text::{
 use crate::core::widget::tree::{self, Tree};
 use crate::core::{
     self, Clipboard, Color, Element, Event, Layout, Length, Pixels, Point,
-    Rectangle, Shell, Size, Vector, Widget,
+    Rectangle, Shell, Size, Vector, Widget, keyboard, touch,
 };
+use unicode_segmentation::UnicodeSegmentation;
 
 /// A bunch of [`Rich`] text.
 pub struct Rich<
@@ -38,6 +40,7 @@ pub struct Rich<
     class: Theme::Class<'a>,
     hovered_link: Option<usize>,
     on_link_click: Option<Box<dyn Fn(Link) -> Message + 'a>>,
+    selectable: bool,
 }
 
 impl<'a, Link, Message, Theme, Renderer>
@@ -64,6 +67,7 @@ where
             class: Theme::default(),
             hovered_link: None,
             on_link_click: None,
+            selectable: false,
         }
     }
 
@@ -148,6 +152,12 @@ where
         self
     }
 
+    /// Makes the [`Rich`] text selectable and copyable.
+    pub fn selectable(mut self) -> Self {
+        self.selectable = true;
+        self
+    }
+
     /// Sets the [`Ellipsize`] strategy of the [`Rich`] text.
     pub fn ellipsize(mut self, ellipsize: Ellipsize) -> Self {
         self.ellipsize = ellipsize;
@@ -211,6 +221,47 @@ struct State<Link, P: Paragraph> {
     spans: Vec<Span<'static, Link, P::Font>>,
     span_pressed: Option<usize>,
     paragraph: P,
+    content: String,
+    selection: Option<SelectionState>,
+    focused: bool,
+    context_menu_position: Option<Point>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SelectionState {
+    anchor: usize,
+    end: usize,
+    dragging: bool,
+    modifiers: keyboard::Modifiers,
+    last_click: Option<click::Click>,
+}
+
+impl SelectionState {
+    fn clear(&mut self) {
+        self.anchor = 0;
+        self.end = 0;
+        self.dragging = false;
+    }
+}
+
+impl<Link, P: Paragraph> crate::core::widget::operation::Focusable
+    for State<Link, P>
+{
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    fn focus(&mut self) {
+        self.focused = true;
+    }
+
+    fn unfocus(&mut self) {
+        self.focused = false;
+        self.context_menu_position = None;
+        if let Some(selection) = &mut self.selection {
+            selection.clear();
+        }
+    }
 }
 
 impl<Link, Message, Theme, Renderer> Widget<Message, Theme, Renderer>
@@ -229,6 +280,10 @@ where
             spans: Vec::new(),
             span_pressed: None,
             paragraph: Renderer::Paragraph::default(),
+            content: String::new(),
+            selection: None,
+            focused: false,
+            context_menu_position: None,
         })
     }
 
@@ -282,6 +337,38 @@ where
             .downcast_ref::<State<Link, Renderer::Paragraph>>();
 
         let style = theme.style(&self.class);
+
+        if let Some(selection) = &state.selection {
+            let left = selection.anchor.min(selection.end);
+            let right = selection.anchor.max(selection.end);
+            if left != right {
+                let lo = grapheme_to_byte(&state.content, left);
+                let hi = grapheme_to_byte(&state.content, right);
+                let anchor = layout.bounds().anchor(
+                    state.paragraph.min_bounds(),
+                    state.paragraph.align_x(),
+                    state.paragraph.align_y(),
+                );
+                for rect in state.paragraph.highlight(
+                    0,
+                    (lo, core::text::Affinity::After),
+                    (hi, core::text::Affinity::Before),
+                ) {
+                    renderer.fill_quad(
+                        renderer::Quad {
+                            bounds: Rectangle {
+                                x: anchor.x + rect.x,
+                                y: anchor.y + rect.y,
+                                width: rect.width,
+                                height: rect.height,
+                            },
+                            ..Default::default()
+                        },
+                        style.selected_fill,
+                    );
+                }
+            }
+        }
 
         for (index, span) in self.spans.as_ref().as_ref().iter().enumerate() {
             let is_hovered_link = self.on_link_click.is_some()
@@ -392,21 +479,18 @@ where
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         _renderer: &Renderer,
-        _clipboard: &mut dyn Clipboard,
+        clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
-        let Some(on_link_clicked) = &self.on_link_click else {
-            return;
-        };
-
+        let state = tree
+            .state
+            .downcast_mut::<State<Link, Renderer::Paragraph>>();
+        let bounds = layout.bounds();
+        let content = state.content.as_str();
         let was_hovered = self.hovered_link.is_some();
 
-        if let Some(position) = cursor.position_in(layout.bounds()) {
-            let state = tree
-                .state
-                .downcast_ref::<State<Link, Renderer::Paragraph>>();
-
+        if let Some(position) = cursor.position_in(bounds) {
             self.hovered_link =
                 state.paragraph.hit_span(position).and_then(|span| {
                     if self.spans.as_ref().as_ref().get(span)?.link.is_some() {
@@ -423,38 +507,274 @@ where
             shell.request_redraw();
         }
 
+        if matches!(
+            event,
+            Event::Mouse(mouse::Event::ButtonPressed(_))
+                | Event::Touch(touch::Event::FingerPressed { .. })
+        ) && cursor.position_over(bounds).is_none()
+        {
+            state.focused = false;
+            state.context_menu_position = None;
+            if let Some(selection) = &mut state.selection {
+                selection.clear();
+            }
+        }
+
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                let state = tree
-                    .state
-                    .downcast_mut::<State<Link, Renderer::Paragraph>>();
-
-                if self.hovered_link.is_some() {
-                    state.span_pressed = self.hovered_link;
+                if state.context_menu_position.take().is_some() {
                     shell.capture_event();
+                    return;
+                }
+                if let Some(position) = cursor.position_over(bounds) {
+                    let clicked_link = self.hovered_link.is_some()
+                        && self.on_link_click.is_some();
+                    if clicked_link {
+                        state.span_pressed = self.hovered_link;
+                        shell.capture_event();
+                    }
+                    if self.selectable {
+                        let paragraph = &state.paragraph;
+                        let selection = state
+                            .selection
+                            .get_or_insert_with(SelectionState::default);
+                        let anchor = bounds.anchor(
+                            paragraph.min_bounds(),
+                            paragraph.align_x(),
+                            paragraph.align_y(),
+                        );
+                        let relative = Point::new(
+                            position.x - anchor.x,
+                            position.y - anchor.y,
+                        );
+                        let index =
+                            hit_to_grapheme(paragraph, relative, content);
+                        let new_click = click::Click::new(
+                            position,
+                            mouse::Button::Left,
+                            selection.last_click.take(),
+                        );
+                        match new_click.kind() {
+                            click::Kind::Single => {
+                                if selection.modifiers.shift() {
+                                    selection.end = index;
+                                } else {
+                                    selection.anchor = index;
+                                    selection.end = index;
+                                }
+                                selection.dragging = true;
+                            }
+                            click::Kind::Double => {
+                                selection.anchor =
+                                    previous_start_of_word(content, index);
+                                selection.end =
+                                    next_end_of_word(content, index);
+                                selection.dragging = true;
+                            }
+                            click::Kind::Triple => {
+                                selection.anchor = 0;
+                                selection.end = content.graphemes(true).count();
+                                selection.dragging = true;
+                            }
+                        }
+                        selection.last_click = Some(new_click);
+                        state.focused = true;
+                        shell.capture_event();
+                    } else if clicked_link {
+                        state.focused = true;
+                    }
                 }
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                let state = tree
-                    .state
-                    .downcast_mut::<State<Link, Renderer::Paragraph>>();
-
+                let selection_is_collapsed =
+                    state.selection.as_ref().map_or(true, |selection| {
+                        selection.anchor == selection.end
+                    });
                 match state.span_pressed {
-                    Some(span) if Some(span) == self.hovered_link => {
-                        if let Some(link) = self
-                            .spans
-                            .as_ref()
-                            .as_ref()
-                            .get(span)
-                            .and_then(|span| span.link.clone())
-                        {
+                    Some(span)
+                        if Some(span) == self.hovered_link
+                            && selection_is_collapsed =>
+                    {
+                        if let (Some(on_link_clicked), Some(link)) = (
+                            self.on_link_click.as_ref(),
+                            self.spans
+                                .as_ref()
+                                .as_ref()
+                                .get(span)
+                                .and_then(|span| span.link.clone()),
+                        ) {
                             shell.publish(on_link_clicked(link));
                         }
                     }
                     _ => {}
                 }
-
                 state.span_pressed = None;
+                if let Some(selection) = &mut state.selection {
+                    selection.dragging = false;
+                }
+            }
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
+                if let Some(position) = cursor.position_over(bounds) {
+                    state.context_menu_position = Some(position);
+                    state.focused = true;
+                    shell.capture_event();
+                }
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(
+                mouse::Button::Right,
+            )) => {
+                if state.context_menu_position.is_some() {
+                    shell.capture_event();
+                }
+            }
+            Event::Mouse(mouse::Event::CursorMoved { position })
+            | Event::Touch(touch::Event::FingerMoved { position, .. }) => {
+                if self.selectable {
+                    if let Some(selection) = &mut state.selection {
+                        if selection.dragging {
+                            let anchor = bounds.anchor(
+                                state.paragraph.min_bounds(),
+                                state.paragraph.align_x(),
+                                state.paragraph.align_y(),
+                            );
+                            let relative = Point::new(
+                                position.x - anchor.x,
+                                position.y - anchor.y,
+                            );
+                            selection.end = hit_to_grapheme(
+                                &state.paragraph,
+                                relative,
+                                content,
+                            );
+                            shell.capture_event();
+                        }
+                    }
+                }
+            }
+            Event::Touch(touch::Event::FingerPressed { .. }) => {
+                if let Some(position) = cursor.position_over(bounds) {
+                    if self.selectable && self.hovered_link.is_none() {
+                        let paragraph = &state.paragraph;
+                        let anchor = bounds.anchor(
+                            paragraph.min_bounds(),
+                            paragraph.align_x(),
+                            paragraph.align_y(),
+                        );
+                        let relative = Point::new(
+                            position.x - anchor.x,
+                            position.y - anchor.y,
+                        );
+                        let index =
+                            hit_to_grapheme(paragraph, relative, content);
+                        let selection = state
+                            .selection
+                            .get_or_insert_with(SelectionState::default);
+                        selection.anchor = index;
+                        selection.end = index;
+                        selection.dragging = true;
+                        state.focused = true;
+                        shell.capture_event();
+                    }
+                }
+            }
+            Event::Touch(touch::Event::FingerLifted { .. }) => {
+                if let Some(selection) = &mut state.selection {
+                    selection.dragging = false;
+                }
+            }
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key,
+                modifiers,
+                physical_key,
+                ..
+            }) if self.selectable && state.focused => {
+                let selection =
+                    state.selection.get_or_insert_with(SelectionState::default);
+                let count = content.graphemes(true).count();
+                let mut handled = false;
+                if modifiers.command() {
+                    match key.to_latin(*physical_key) {
+                        Some('c') => {
+                            let left = selection.anchor.min(selection.end);
+                            let right = selection.anchor.max(selection.end);
+                            if left != right {
+                                let selected: String = content
+                                    .graphemes(true)
+                                    .skip(left)
+                                    .take(right - left)
+                                    .collect();
+                                clipboard.write(
+                                    crate::core::clipboard::Kind::Standard,
+                                    selected,
+                                );
+                            }
+                            shell.capture_event();
+                            handled = true;
+                        }
+                        Some('a') => {
+                            selection.anchor = 0;
+                            selection.end = count;
+                            shell.capture_event();
+                            handled = true;
+                        }
+                        _ => {}
+                    }
+                }
+                if handled {
+                    return;
+                }
+
+                match key {
+                    keyboard::Key::Named(keyboard::key::Named::ArrowLeft) => {
+                        if modifiers.shift() {
+                            selection.end = selection.end.saturating_sub(1);
+                        } else {
+                            let position = selection
+                                .anchor
+                                .min(selection.end)
+                                .saturating_sub(1);
+                            selection.anchor = position;
+                            selection.end = position;
+                        }
+                        shell.capture_event();
+                    }
+                    keyboard::Key::Named(keyboard::key::Named::ArrowRight) => {
+                        if modifiers.shift() {
+                            selection.end = (selection.end + 1).min(count);
+                        } else {
+                            let position =
+                                (selection.anchor.max(selection.end) + 1)
+                                    .min(count);
+                            selection.anchor = position;
+                            selection.end = position;
+                        }
+                        shell.capture_event();
+                    }
+                    keyboard::Key::Named(keyboard::key::Named::Home) => {
+                        if modifiers.shift() {
+                            selection.end = 0;
+                        } else {
+                            selection.anchor = 0;
+                            selection.end = 0;
+                        }
+                        shell.capture_event();
+                    }
+                    keyboard::Key::Named(keyboard::key::Named::End) => {
+                        if modifiers.shift() {
+                            selection.end = count;
+                        } else {
+                            selection.anchor = count;
+                            selection.end = count;
+                        }
+                        shell.capture_event();
+                    }
+                    _ => {}
+                }
+            }
+            Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+                if let Some(selection) = &mut state.selection {
+                    selection.modifiers = *modifiers;
+                }
             }
             _ => {}
         }
@@ -463,17 +783,140 @@ where
     fn mouse_interaction(
         &self,
         _tree: &Tree,
-        _layout: Layout<'_>,
-        _cursor: mouse::Cursor,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
         _viewport: &Rectangle,
         _renderer: &Renderer,
     ) -> mouse::Interaction {
         if self.hovered_link.is_some() {
             mouse::Interaction::Pointer
+        } else if self.selectable && cursor.is_over(layout.bounds()) {
+            mouse::Interaction::Text
         } else {
             mouse::Interaction::None
         }
     }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        _renderer: &Renderer,
+        operation: &mut dyn crate::core::widget::Operation,
+    ) {
+        let state = tree
+            .state
+            .downcast_mut::<State<Link, Renderer::Paragraph>>();
+        operation.text(None, layout.bounds(), &state.content);
+        if self.selectable {
+            operation.focusable(None, layout.bounds(), state);
+        }
+    }
+}
+
+impl<Link, Message, Theme, Renderer> HasSelectableText
+    for Rich<'_, Link, Message, Theme, Renderer>
+where
+    Link: Clone + 'static,
+    Theme: Catalog,
+    Renderer: core::text::Renderer,
+{
+    fn selected_text(&self, tree: &Tree) -> Option<String> {
+        let state = tree
+            .state
+            .downcast_ref::<State<Link, Renderer::Paragraph>>();
+        let selection = state.selection.as_ref()?;
+        let left = selection.anchor.min(selection.end);
+        let right = selection.anchor.max(selection.end);
+        if left == right {
+            return None;
+        }
+        Some(
+            state
+                .content
+                .graphemes(true)
+                .skip(left)
+                .take(right - left)
+                .collect(),
+        )
+    }
+
+    fn select_all(&self, tree: &mut Tree) {
+        let state = tree
+            .state
+            .downcast_mut::<State<Link, Renderer::Paragraph>>();
+        let count = state.content.graphemes(true).count();
+        let selection =
+            state.selection.get_or_insert_with(SelectionState::default);
+        selection.anchor = 0;
+        selection.end = count;
+    }
+
+    fn is_focused(&self, tree: &Tree) -> bool {
+        tree.state
+            .downcast_ref::<State<Link, Renderer::Paragraph>>()
+            .focused
+    }
+
+    fn context_menu_position(&self, tree: &Tree) -> Option<Point> {
+        tree.state
+            .downcast_ref::<State<Link, Renderer::Paragraph>>()
+            .context_menu_position
+    }
+
+    fn set_context_menu_position(&self, tree: &mut Tree, pos: Option<Point>) {
+        tree.state
+            .downcast_mut::<State<Link, Renderer::Paragraph>>()
+            .context_menu_position = pos;
+    }
+}
+
+fn grapheme_to_byte(content: &str, grapheme_index: usize) -> usize {
+    content
+        .graphemes(true)
+        .take(grapheme_index)
+        .map(str::len)
+        .sum()
+}
+
+fn hit_to_grapheme<P: Paragraph>(
+    paragraph: &P,
+    point: Point,
+    content: &str,
+) -> usize {
+    match paragraph.hit_test(point) {
+        Some(hit) => content[..hit.cursor().min(content.len())]
+            .graphemes(true)
+            .count(),
+        None => content.graphemes(true).count(),
+    }
+}
+
+fn previous_start_of_word(content: &str, grapheme_index: usize) -> usize {
+    let graphemes: Vec<&str> = content.graphemes(true).collect();
+    let clamped = grapheme_index.min(graphemes.len());
+    let before: String = graphemes[..clamped].concat();
+    UnicodeSegmentation::split_word_bound_indices(before.as_str())
+        .filter(|(_, word)| !word.trim_start().is_empty())
+        .next_back()
+        .map_or(0, |(index, word)| {
+            clamped
+                - word.graphemes(true).count()
+                - before[index + word.len()..].graphemes(true).count()
+        })
+}
+
+fn next_end_of_word(content: &str, grapheme_index: usize) -> usize {
+    let graphemes: Vec<&str> = content.graphemes(true).collect();
+    let clamped = grapheme_index.min(graphemes.len());
+    let after: String = graphemes[clamped..].concat();
+    UnicodeSegmentation::split_word_bound_indices(after.as_str())
+        .find(|(_, word)| !word.trim_start().is_empty())
+        .map_or(graphemes.len(), |(index, word)| {
+            clamped
+                + word.graphemes(true).count()
+                + after[..index].graphemes(true).count()
+        })
 }
 
 fn layout<Link, Renderer>(
@@ -518,6 +961,8 @@ where
             state.paragraph =
                 Renderer::Paragraph::with_spans(text_with_spans());
             state.spans = spans.iter().cloned().map(Span::to_static).collect();
+            state.content =
+                state.spans.iter().map(|span| span.text.as_ref()).collect();
         } else {
             match state.paragraph.compare(core::Text {
                 content: (),

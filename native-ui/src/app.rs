@@ -1,30 +1,29 @@
 use crate::api::{
-    AgentProfileConfigurePayload, AgentProfileJob, AgentProfilePayload, ApiClient, ChatRequest,
-    ChatStreamEvent, CommunitySearchPayload, ConfigPayload, IdeConnectionsPayload,
-    ManagerModelsPayload, QuantizationCapabilities, QuantizationJob, RuntimeConfig, StatusPayload,
+    ApiClient, ChatImageAttachment, ChatRequest, ChatStreamEvent, CommunitySearchPayload,
+    ConfigPayload, IdeConnectionsPayload, ManagerModelsPayload, RuntimeConfig, StatusPayload,
     string_at,
 };
 use crate::appearance::{
-    ALUMINUM_FRAME_WIDTH, APP_PADDING, Accent, CONTENT_RADIUS, MaterialMode,
-    NUMBER_ALUMINUM_RULE_HEIGHT, PAGE_FRAME_INSET, PAGE_SECTION_GAP, Page, SECTION_DIVIDER_INSET,
-    SIDEBAR_ALUMINUM_CORE_ALPHA, SIDEBAR_ALUMINUM_HIGHLIGHT_ALPHA, SIDEBAR_ALUMINUM_LEFT_OFFSET,
-    SIDEBAR_ALUMINUM_SHADE_ALPHA, SIDEBAR_ALUMINUM_WIDTH, SIDEBAR_BUTTON_SIZE,
-    SIDEBAR_HOVER_PILL_HEIGHT, SIDEBAR_HOVER_PILL_WIDTH, SIDEBAR_ICON_HOVER_SCALE,
-    SIDEBAR_ICON_SLOT_SIZE, SIDEBAR_ITEM_GAP, SIDEBAR_ITEM_INSET, SIDEBAR_SEPARATOR_GUTTER_WIDTH,
-    SIDEBAR_WIDTH, palette, rgba,
+    ALUMINUM_FRAME_WIDTH, APP_PADDING, Accent, CONTENT_RADIUS, CONTROL_HEIGHT, CONTROL_TEXT_SIZE,
+    ICON_CONTROL_SIZE, MaterialMode, PAGE_FRAME_INSET, PAGE_SECTION_GAP, Page,
+    SECTION_DIVIDER_INSET, SIDEBAR_ALUMINUM_CORE_ALPHA, SIDEBAR_ALUMINUM_HIGHLIGHT_ALPHA,
+    SIDEBAR_ALUMINUM_LEFT_OFFSET, SIDEBAR_ALUMINUM_SHADE_ALPHA, SIDEBAR_ALUMINUM_WIDTH,
+    SIDEBAR_BUTTON_SIZE, SIDEBAR_HOVER_PILL_HEIGHT, SIDEBAR_HOVER_PILL_WIDTH,
+    SIDEBAR_ICON_HOVER_SCALE, SIDEBAR_ICON_SLOT_SIZE, SIDEBAR_ITEM_GAP, SIDEBAR_ITEM_INSET,
+    SIDEBAR_SEPARATOR_GUTTER_WIDTH, SIDEBAR_WIDTH, palette, rgba,
 };
-use crate::glass::{
-    GlassState, GlassVariant, glass_button_style, glass_container_style, state_from_status,
-};
+use crate::glass::{GlassState, GlassVariant, glass_container_style};
 use crate::persistence::{
-    NativeSettings, NativeState, NativeStateStore, StoredConversation, StoredMessage,
+    NativeSettings, NativeState, NativeStateStore, StoredAttachment, StoredConversation,
+    StoredConversationProfile, StoredMessage,
 };
 use crate::window_effects::{PlatformWindowEffects, WindowEffectOp, WindowEffectsBackend};
 use crate::workshed::{self, BlockDefinition, InputBinding, ParamField, ParamKind, WorkshedIssue};
 use cosmic::app::Core;
 use cosmic::iced::widget::{button, container, slider, text, text_editor};
 use cosmic::iced::{
-    Alignment, Background, Border, Color, Font, Length, Shadow, Vector, keyboard, window,
+    Alignment, Background, Border, Color, ContentFit, Font, Length, Shadow, Vector, keyboard,
+    window,
 };
 use cosmic::{
     Core as CosmicCore, Element, Renderer, Theme, executor, iced, prelude::*, theme, widget,
@@ -48,17 +47,14 @@ pub struct AppFlags {
     pub api_base: String,
     pub server_url: String,
     pub manager_token: String,
+    pub agent_token: String,
     pub initial_page: Page,
     pub ide_companion: bool,
 }
 
-const AGENT_RUNTIME_GROUP_WIDTH: f32 = 178.0;
-const AGENT_RUNTIME_GROUP_HEIGHT: f32 = 38.0;
-const AGENT_RUNTIME_BUTTON_WIDTH: f32 = 174.0;
-const AGENT_RUNTIME_BUTTON_HEIGHT: f32 = 32.0;
 const WORKSHED_PREFLIGHT_DEFAULT_OPEN: bool = false;
-const WORKSHED_CATEGORY_STRIPE_WIDTH: f32 = 3.0;
 const WORKSHED_PANEL_WIDTH: f32 = 312.0;
+const CHAT_FEED_SCROLL_ID: &str = "token-workshed-chat-feed";
 // A terminal window is a first-class Caligo surface, so its radius follows
 // the app's content radius instead of introducing a separate visual scale.
 const TERMINAL_WINDOW_RADIUS: f32 = CONTENT_RADIUS + 4.0;
@@ -76,6 +72,17 @@ enum WorkshedPortDirection {
     Output,
 }
 
+const WORKSHED_BLOCK_LONG_PRESS: Duration = Duration::from_millis(450);
+const WORKSHED_BLOCK_DRAG_THRESHOLD: f32 = 8.0;
+
+#[derive(Debug, Clone)]
+struct WorkshedBlockPress {
+    block_id: String,
+    started_at: Instant,
+    pointer_origin: Option<(f32, f32)>,
+    dragging: bool,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     PagePressed(Page),
@@ -83,7 +90,6 @@ pub enum Message {
     SidebarHoverExit(Page),
     AnimationTick(Instant),
     PollTick(Instant),
-    QuantizationJobTick(Instant),
     ConfigLoaded(Result<ConfigPayload, String>),
     ManagerLoaded {
         generation: u64,
@@ -99,14 +105,32 @@ pub enum Message {
     DeveloperTerminalSent(Result<String, String>),
     CommunitySearchLoaded(Result<CommunitySearchPayload, String>),
     CommunityJobLoaded(Result<Option<Value>, String>),
-    CommunityDeployLoaded(Result<Option<Value>, String>),
+    CommunityDownloadLoaded(Result<Option<Value>, String>),
     CommunityJobActionLoaded(Result<Option<Value>, String>),
-    QuantizationCapabilitiesLoaded(Result<QuantizationCapabilities, String>),
-    QuantizationPreflightLoaded(Result<Value, String>),
-    QuantizationStarted(Result<QuantizationJob, String>),
-    QuantizationJobLoaded(Result<QuantizationJob, String>),
-    QuantizationActionLoaded(Result<QuantizationJob, String>),
-    QuantizationDeliveryLoaded(Result<QuantizationJob, String>),
+    AgentDashboardLoaded(Result<Value, String>),
+    AgentRefreshPressed,
+    AgentSectionPressed(AgentSection),
+    AgentFormOpen(AgentFormKind, Value),
+    AgentFormFieldChanged(String, String),
+    AgentFormToggleChanged(String, bool),
+    AgentFormBodyAction(text_editor::Action),
+    AgentFormSavePressed,
+    AgentFormSaved(Result<Value, String>),
+    AgentFormCancelPressed,
+    AgentActionPressed(Value),
+    AgentQuickActionLoaded {
+        action: String,
+        result: Result<Value, String>,
+    },
+    RuntimeTargetPressed(String),
+    ServerSettingsToggled,
+    ServerSettingsSectionPressed(ServerSettingsSection),
+    AgentActionPanelToggled,
+    AgentCommandAction(text_editor::Action),
+    AgentCommandTemplate(String),
+    AgentCommandPressed,
+    AgentCommandLoaded(Result<Value, String>),
+    AgentReindexFinished(Result<(), String>),
     WorkshedCapabilitiesLoaded(Result<Value, String>),
     WorkshedWorkOrdersLoaded(Result<Vec<Value>, String>),
     WorkshedRunsLoaded(Result<Vec<Value>, String>),
@@ -125,6 +149,17 @@ pub enum Message {
     WorkshedBlockAddPressed(String),
     WorkshedBlockSelectPressed(String),
     WorkshedBlockDeletePressed(String),
+    WorkshedBlockPointerEntered(String),
+    WorkshedBlockPointerExited(String),
+    WorkshedDeleteDropZoneEntered,
+    WorkshedDeleteDropZoneExited,
+    WorkshedPointerMoved {
+        x: f32,
+        y: f32,
+    },
+    WorkshedPointerPressed,
+    WorkshedPointerReleased,
+    WorkshedPointerLeft,
     WorkshedDeleteSelectedPressed,
     WorkshedBlockMovePressed(i8),
     WorkshedBlockDuplicatePressed,
@@ -226,24 +261,9 @@ pub enum Message {
         request_id: u64,
         event: ChatStreamEvent,
     },
+    ChatCancelCompleted(Result<bool, String>),
     ChatRevealTick(Instant),
-    AgentProfileLoaded {
-        model: String,
-        result: Result<AgentProfilePayload, String>,
-    },
-    AgentProfileConfigureStarted {
-        model: String,
-        result: Result<AgentProfileConfigurePayload, String>,
-    },
-    AgentProfileJobLoaded {
-        model: String,
-        result: Result<AgentProfileJob, String>,
-    },
-    AgentProfilePollTick(Instant),
-    AgentProfileDeleted {
-        model: String,
-        result: Result<bool, String>,
-    },
+    OpenChatLink(String),
     SwitchModelLoaded {
         model: String,
         result: Result<ManagerModelsPayload, String>,
@@ -252,6 +272,28 @@ pub enum Message {
         model: String,
         result: Result<ManagerModelsPayload, String>,
     },
+    ServerConnectionLoaded(Result<Value, String>),
+    RemoteHostKeyInspected(Result<Value, String>),
+    RemoteServerActionLoaded {
+        action: String,
+        result: Result<Value, String>,
+    },
+    AgentTransferCategoryToggled {
+        category: String,
+        selected: bool,
+    },
+    AgentTransferPreviewPressed(String),
+    AgentTransferSourceLoaded {
+        direction: String,
+        result: Result<Value, String>,
+    },
+    AgentTransferPreviewLoaded {
+        direction: String,
+        transfer: Value,
+        result: Result<Value, String>,
+    },
+    AgentTransferImportPressed,
+    AgentTransferImportLoaded(Result<Value, String>),
     RuntimeSaved(Result<RuntimeConfig, String>),
     ConcurrentSaved(Result<ManagerModelsPayload, String>),
     HfBindingSaved(Result<String, String>),
@@ -262,6 +304,10 @@ pub enum Message {
     ChatModelOptionPressed(String),
     ServerUrlChanged(String),
     ManagerTokenChanged(String),
+    RemoteServerHostChanged(String),
+    RemoteServerUsernameChanged(String),
+    RemoteServerPortChanged(String),
+    RemoteServerIdentityChanged(String),
     MaxTokensChanged(String),
     TemperatureChanged(String),
     TemperatureSliderChanged(f32),
@@ -270,23 +316,12 @@ pub enum Message {
     ApplySystemPromptPressed,
     ClearSystemPromptPressed,
     CommunityQueryChanged(String),
-    QuantizationSourceKindChanged(String),
-    QuantizationSourceChanged(String),
-    QuantizationEngineChanged(String),
-    QuantizationPresetChanged(String),
-    QuantizationOutputChanged(String),
-    QuantizationRevisionChanged(String),
-    QuantizationBitsChanged(String),
-    QuantizationGroupSizeChanged(String),
-    QuantizationModeChanged(String),
-    QuantizationAlgorithmChanged(String),
-    QuantizationAdvancedToggled,
     HfUsernameChanged(String),
     HfTokenChanged(String),
-    RuntimeBoolChanged(RuntimeBoolField, bool),
     RuntimeTextChanged(RuntimeTextField, String),
     ToggleConcurrentModel(String),
     SendPressed,
+    StopChatPressed,
     AttachMediaPressed,
     ClearMediaPressed,
     NewConversationPressed,
@@ -294,17 +329,16 @@ pub enum Message {
     SelectConversationPressed(String),
     SaveServerSettingsPressed,
     ResetServerSettingsPressed,
+    InspectRemoteServerPressed,
+    ConnectRemoteServerPressed,
+    DisconnectRemoteServerPressed,
+    ToggleLocalServerMode(bool),
     SaveGenerationPressed,
     ResetGenerationPressed,
     ClearStoragePressed,
     SearchCommunityPressed,
-    DeployCommunityPressed(String),
+    DownloadCommunityPressed(String),
     CommunityJobActionPressed(String),
-    QuantizationPreflightPressed,
-    QuantizationStartPressed,
-    QuantizationActionPressed(String),
-    QuantizationDeliveryPressed(String),
-    QuantizationDeliveryDismissed,
     ApproveIdePairingPressed(String),
     ApproveIdePairingAllPressed(String),
     RejectIdePairingPressed(String),
@@ -319,10 +353,6 @@ pub enum Message {
     StopExtrasPressed,
     ApplyConcurrentPressed,
     SaveHfBindingPressed,
-    ToggleAgentRuntime(String),
-    ConfigureAgentProfilePressed,
-    DeleteAgentProfilePressed,
-    RecalibrateAgentProfilePressed,
     DispatchModeChanged(String),
     LanguageSelected(String),
     CloseRequested(window::Id),
@@ -330,34 +360,21 @@ pub enum Message {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum RuntimeBoolField {
-    ContinuousBatching,
-    PagedCache,
-    KvCacheQuantization,
-    EnableMtp,
-}
-
-#[derive(Debug, Clone, Copy)]
 pub enum RuntimeTextField {
     ChunkedPrefill,
-    MtpDraft,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputField {
     RuntimeChunkedPrefill,
-    RuntimeMtpDraft,
     ServerUrl,
     ManagerToken,
+    RemoteServerHost,
+    RemoteServerUsername,
+    RemoteServerPort,
+    RemoteServerIdentity,
     MaxTokens,
     CommunityQuery,
-    QuantizationSource,
-    QuantizationOutput,
-    QuantizationRevision,
-    QuantizationBits,
-    QuantizationGroupSize,
-    QuantizationMode,
-    QuantizationAlgorithm,
     WorkshedModelName,
     WorkshedSearch,
     HfUsername,
@@ -403,74 +420,305 @@ struct ModelSwitchNotice {
 struct ModelSwitchSnapshot {
     selected_model: String,
     selected_local_model: String,
-    profile_state: AgentProfileState,
-    openclaw_enabled: bool,
-    agent_runtime: String,
-}
-
-#[derive(Debug, Clone)]
-enum AgentProfileState {
-    Unconfigured,
-    Configuring {
-        job_id: String,
-        progress: f32,
-        phase: String,
-    },
-    Configured {
-        profile: Value,
-        completed_at: Option<Instant>,
-    },
-    Failed {
-        message: String,
-    },
-}
-
-impl Default for AgentProfileState {
-    fn default() -> Self {
-        Self::Unconfigured
-    }
-}
-
-impl AgentProfileState {
-    fn is_configured(&self) -> bool {
-        matches!(
-            self,
-            Self::Configured {
-                completed_at: None,
-                ..
-            }
-        )
-    }
-
-    fn is_configuring(&self) -> bool {
-        matches!(self, Self::Configuring { .. })
-    }
-
-    fn completion_active(&self) -> bool {
-        matches!(
-            self,
-            Self::Configured {
-                completed_at: Some(_),
-                ..
-            }
-        )
-    }
 }
 
 #[derive(Debug, Clone)]
 struct StreamingReplyState {
     request_id: u64,
     request_model: String,
+    run_id: String,
     conversation_id: String,
     message_index: usize,
-    thinking_message_index: Option<usize>,
-    thinking_received: String,
-    thinking_started_at: Option<Instant>,
-    thinking_duration: Option<Duration>,
     received: String,
     visible_chars: usize,
     done: bool,
     started_at: Instant,
+}
+
+fn replace_streaming_answer(stream: &mut StreamingReplyState, answer: String) {
+    if answer.trim().is_empty() {
+        return;
+    }
+
+    let mut normalized = String::new();
+    append_normalized_stream_text(&mut normalized, &answer);
+    if normalized.trim().is_empty() {
+        return;
+    }
+
+    let already_visible = stream.visible_chars;
+    stream.received = normalized;
+    stream.visible_chars = already_visible.min(stream.received.chars().count());
+}
+
+fn append_streaming_delta(stream: &mut StreamingReplyState, delta: &str) {
+    append_normalized_stream_text(&mut stream.received, delta);
+}
+
+fn append_normalized_stream_text(received: &mut String, delta: &str) {
+    const MAX_STREAM_SPACE_RUN: usize = 8;
+
+    let mut characters = delta.chars().peekable();
+    while let Some(character) = characters.next() {
+        let is_line_break = matches!(
+            character,
+            '\r' | '\n' | '\u{000b}' | '\u{000c}' | '\u{0085}' | '\u{2028}' | '\u{2029}'
+        );
+        if received.is_empty() && character.is_whitespace() {
+            continue;
+        }
+
+        if is_line_break {
+            if character == '\r' && characters.peek() == Some(&'\n') {
+                characters.next();
+            }
+            let trailing_line_breaks = received
+                .chars()
+                .rev()
+                .take_while(|character| character.is_whitespace())
+                .filter(|character| *character == '\n')
+                .count();
+            if trailing_line_breaks < 2 {
+                received.push('\n');
+            }
+        } else if character.is_whitespace() {
+            let trailing_spaces = received
+                .chars()
+                .rev()
+                .take_while(|character| *character == ' ')
+                .count();
+            if trailing_spaces < MAX_STREAM_SPACE_RUN {
+                received.push(' ');
+            }
+        } else if character == '\u{200b}' || character == '\u{feff}' || character.is_control() {
+            continue;
+        } else {
+            received.push(character);
+        }
+    }
+}
+
+fn chat_feed_scroll_end_offset() -> iced::widget::scrollable::RelativeOffset<Option<f32>> {
+    iced::widget::scrollable::RelativeOffset {
+        x: None,
+        y: Some(1.0),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ChatAgentStatus {
+    conversation_id: String,
+    message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentSection {
+    Memory,
+    Connections,
+    Schedule,
+    Activity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ServerSettingsSection {
+    Connection,
+    Service,
+    ModelRouting,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentFormKind {
+    Memory,
+    Skill,
+    McpServer,
+    ScheduledTask,
+}
+
+impl AgentFormKind {
+    fn action(self) -> &'static str {
+        match self {
+            Self::Memory => "save_memory",
+            Self::Skill => "save_skill",
+            Self::McpServer => "save_mcp_server",
+            Self::ScheduledTask => "create_job",
+        }
+    }
+
+    fn long_field(self) -> &'static str {
+        match self {
+            Self::Memory | Self::Skill => "body",
+            Self::McpServer => "args",
+            Self::ScheduledTask => "prompt",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::Memory => "Memory",
+            Self::Skill => "Skill",
+            Self::McpServer => "MCP connection",
+            Self::ScheduledTask => "Scheduled task",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AgentFormDraft {
+    kind: AgentFormKind,
+    original: Value,
+    fields: BTreeMap<String, String>,
+    enabled: bool,
+    computer_control: bool,
+}
+
+impl AgentFormDraft {
+    fn new(kind: AgentFormKind, original: Value) -> Self {
+        let mut fields = BTreeMap::new();
+        let get_text = |key: &str| {
+            original
+                .get(key)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        match kind {
+            AgentFormKind::Memory => {
+                fields.insert("title".into(), get_text("title"));
+                fields.insert("body".into(), get_text("body"));
+                let tags = original
+                    .get("tags")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .or_else(|| {
+                        original
+                            .get("tags_json")
+                            .and_then(Value::as_str)
+                            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                            .and_then(|value| value.as_array().cloned())
+                    })
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|value| value.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                fields.insert("tags".into(), tags);
+            }
+            AgentFormKind::Skill => {
+                fields.insert("name".into(), get_text("name"));
+                fields.insert("description".into(), get_text("description"));
+                fields.insert("body".into(), get_text("body"));
+            }
+            AgentFormKind::McpServer => {
+                fields.insert("name".into(), get_text("name"));
+                fields.insert(
+                    "transport".into(),
+                    original
+                        .get("transport")
+                        .and_then(Value::as_str)
+                        .unwrap_or("stdio")
+                        .to_string(),
+                );
+                fields.insert("command".into(), get_text("command"));
+                fields.insert(
+                    "args".into(),
+                    original
+                        .get("args")
+                        .and_then(Value::as_array)
+                        .map(|args| {
+                            args.iter()
+                                .filter_map(Value::as_str)
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        })
+                        .unwrap_or_default(),
+                );
+                fields.insert("url".into(), get_text("url"));
+                fields.insert(
+                    "timeout".into(),
+                    original
+                        .get("timeout")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(30.0)
+                        .to_string(),
+                );
+                fields.insert("secret_name".into(), String::new());
+                fields.insert("secret_value".into(), String::new());
+            }
+            AgentFormKind::ScheduledTask => {
+                fields.insert("title".into(), get_text("title"));
+                fields.insert("prompt".into(), get_text("prompt"));
+                fields.insert(
+                    "schedule".into(),
+                    original
+                        .get("schedule")
+                        .and_then(Value::as_str)
+                        .unwrap_or("@every 3600")
+                        .to_string(),
+                );
+                fields.insert(
+                    "timezone".into(),
+                    original
+                        .get("timezone")
+                        .and_then(Value::as_str)
+                        .unwrap_or("UTC")
+                        .to_string(),
+                );
+                fields.insert("model_id".into(), get_text("model_id"));
+                fields.insert(
+                    "tool_scope".into(),
+                    original
+                        .get("tool_scope")
+                        .and_then(Value::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_default(),
+                );
+                let authorization = original
+                    .get("authorization_scope")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                for (field, key) in [
+                    ("allowed_paths", "allowed_paths"),
+                    ("allowed_domains", "allowed_domains"),
+                    ("browser_profile_ids", "browser_profile_ids"),
+                ] {
+                    let value = authorization
+                        .get(key)
+                        .and_then(Value::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_default();
+                    fields.insert(field.into(), value);
+                }
+            }
+        }
+        let enabled = original
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let computer_control = original
+            .get("authorization_scope")
+            .and_then(|value| value.get("computer_control"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        Self {
+            kind,
+            original,
+            fields,
+            enabled,
+            computer_control,
+        }
+    }
 }
 
 enum MarkdownBlock {
@@ -486,6 +734,7 @@ enum MarkdownBlock {
 pub struct TokenWorkshedApp {
     core: CosmicCore,
     api_base: String,
+    agent_token: String,
     store: NativeStateStore,
     native_state: NativeState,
     current_page: Page,
@@ -496,18 +745,16 @@ pub struct TokenWorkshedApp {
     chat_model_menu_open: bool,
     model_switch_notice: Option<ModelSwitchNotice>,
     pending_model_switch: Option<ModelSwitchSnapshot>,
-    agent_profile_state: AgentProfileState,
     streaming_reply: Option<StreamingReplyState>,
+    chat_agent_status: Option<ChatAgentStatus>,
     next_chat_request_id: u64,
     manager_refresh_generation: u64,
     minimum_manager_response_generation: u64,
     manager_refresh_in_flight: bool,
     status_refresh_in_flight: bool,
-    agent_profile_refresh_in_flight: bool,
     developer_logs_refresh_in_flight: bool,
     community_job_refresh_in_flight: bool,
-    quantization_capabilities_refresh_in_flight: bool,
-    quantization_job_refresh_in_flight: bool,
+    agent_refresh_in_flight: bool,
     workshed_refresh_in_flight: bool,
     ide_connections_refresh_in_flight: bool,
     window_effects: PlatformWindowEffects,
@@ -515,7 +762,7 @@ pub struct TokenWorkshedApp {
     status_text: String,
     server_badge: String,
     token_workshed_version: String,
-    vllm_mlx_version: String,
+    sglang_version: String,
     message_content: text_editor::Content<Renderer>,
     prompt_content: text_editor::Content<Renderer>,
     developer_logs: Vec<String>,
@@ -533,23 +780,33 @@ pub struct TokenWorkshedApp {
     manager_models: ManagerModelsPayload,
     runtime_config: RuntimeConfig,
     status_payload: StatusPayload,
+    server_connection: Value,
+    remote_server_url: String,
+    inspected_host_fingerprint: String,
+    server_action_in_flight: bool,
+    runtime_remote_setup_open: bool,
+    server_settings_open: bool,
+    server_settings_section: Option<ServerSettingsSection>,
+    remote_host_key_changed: bool,
+    agent_reindexed_profile: String,
+    agent_transfer_categories: BTreeSet<String>,
+    agent_transfer_payload: Option<Value>,
+    agent_transfer_preview: Value,
+    agent_transfer_preview_direction: String,
+    agent_transfer_in_flight: bool,
+    agent_transfer_message: String,
     community_results: Vec<Value>,
     community_job: Option<Value>,
-    quantization_capabilities: QuantizationCapabilities,
-    quantization_preflight: Value,
-    quantization_job: Option<QuantizationJob>,
-    quantization_delivery_open: bool,
-    quantization_source_kind: String,
-    quantization_source: String,
-    quantization_engine: String,
-    quantization_preset: String,
-    quantization_output: String,
-    quantization_revision: String,
-    quantization_bits: String,
-    quantization_group_size: String,
-    quantization_mode: String,
-    quantization_algorithm: String,
-    quantization_advanced_open: bool,
+    agent_dashboard: Value,
+    agent_feedback: String,
+    agent_section: Option<AgentSection>,
+    agent_form: Option<AgentFormDraft>,
+    agent_form_body: text_editor::Content<Renderer>,
+    agent_form_message: String,
+    agent_form_saving: bool,
+    agent_action_panel_open: bool,
+    agent_command_content: text_editor::Content<Renderer>,
+    agent_command_message: String,
     workshed_capabilities: Value,
     workshed_work_orders: Vec<Value>,
     workshed_order: Value,
@@ -560,6 +817,13 @@ pub struct TokenWorkshedApp {
     workshed_category: String,
     workshed_search: String,
     workshed_selected_block: String,
+    workshed_hovered_block: Option<String>,
+    workshed_pointer_position: Option<(f32, f32)>,
+    workshed_block_press: Option<WorkshedBlockPress>,
+    workshed_drag_source: Option<String>,
+    workshed_drag_pointer_origin: Option<(f32, f32)>,
+    workshed_delete_drop_zone_active: bool,
+    workshed_just_dragged_block: Option<(String, Instant)>,
     workshed_model_picker: Option<String>,
     workshed_model_results_open: bool,
     workshed_option_search_due: Option<(Instant, String, String)>,
@@ -596,7 +860,7 @@ impl cosmic::Application for TokenWorkshedApp {
     type Flags = AppFlags;
     type Message = Message;
 
-    const APP_ID: &'static str = "com.taylorhe.token-workshed.native-ui";
+    const APP_ID: &'static str = "com.taylorhe.tokenworkshed.nextcore.native-ui";
 
     fn core(&self) -> &Core {
         &self.core
@@ -620,19 +884,25 @@ impl cosmic::Application for TokenWorkshedApp {
             native_state.settings.manager_token = flags.manager_token.trim().to_string();
         }
         normalize_settings(&mut native_state.settings);
-        native_state.settings.openclaw_enabled = false;
-        native_state.settings.agent_runtime = "auto".into();
         let _ = store.save(&native_state);
 
         let max_tokens_input = native_state.settings.max_tokens.to_string();
         let temperature_input = format!("{:.2}", native_state.settings.temperature);
         let message_content = text_editor::Content::new();
         let prompt_content = text_editor::Content::with_text(&native_state.settings.system_prompt);
+        let agent_command_content = text_editor::Content::with_text(
+            "{\n  \"action\": \"save_memory\",\n  \"data\": {\n    \"title\": \"Example\",\n    \"body\": \"Replace this with a durable preference or fact.\"\n  }\n}",
+        );
         let current_page = flags.initial_page;
+        let runtime_remote_setup_open = native_state
+            .runtime_target
+            .as_deref()
+            .is_some_and(|target| target == "remote");
 
         let mut app = Self {
             core,
             api_base: flags.api_base,
+            agent_token: flags.agent_token,
             store,
             native_state,
             current_page,
@@ -643,26 +913,24 @@ impl cosmic::Application for TokenWorkshedApp {
             chat_model_menu_open: false,
             model_switch_notice: None,
             pending_model_switch: None,
-            agent_profile_state: AgentProfileState::Unconfigured,
             streaming_reply: None,
+            chat_agent_status: None,
             next_chat_request_id: 0,
             manager_refresh_generation: 0,
             minimum_manager_response_generation: 0,
             manager_refresh_in_flight: false,
             status_refresh_in_flight: false,
-            agent_profile_refresh_in_flight: false,
             developer_logs_refresh_in_flight: false,
             community_job_refresh_in_flight: false,
-            quantization_capabilities_refresh_in_flight: false,
-            quantization_job_refresh_in_flight: false,
+            agent_refresh_in_flight: false,
             workshed_refresh_in_flight: false,
             ide_connections_refresh_in_flight: false,
             window_effects: PlatformWindowEffects::new(),
             allow_close: false,
-            status_text: "Starting token-workshed native UI...".into(),
+            status_text: "Starting token-workshed NextCore...".into(),
             server_badge: "Server: checking...".into(),
             token_workshed_version: "0.1.0".into(),
-            vllm_mlx_version: String::new(),
+            sglang_version: String::new(),
             message_content,
             prompt_content,
             developer_logs: Vec::new(),
@@ -681,23 +949,39 @@ impl cosmic::Application for TokenWorkshedApp {
             manager_models: ManagerModelsPayload::default(),
             runtime_config: RuntimeConfig::default(),
             status_payload: StatusPayload::default(),
+            server_connection: Value::Null,
+            remote_server_url: String::new(),
+            inspected_host_fingerprint: String::new(),
+            server_action_in_flight: false,
+            runtime_remote_setup_open,
+            server_settings_open: false,
+            server_settings_section: None,
+            remote_host_key_changed: false,
+            agent_reindexed_profile: String::new(),
+            agent_transfer_categories: [
+                "memories".to_string(),
+                "skills".to_string(),
+                "chat_history".to_string(),
+            ]
+            .into_iter()
+            .collect(),
+            agent_transfer_payload: None,
+            agent_transfer_preview: Value::Null,
+            agent_transfer_preview_direction: String::new(),
+            agent_transfer_in_flight: false,
+            agent_transfer_message: "Preview selected data before importing it.".into(),
             community_results: Vec::new(),
             community_job: None,
-            quantization_capabilities: QuantizationCapabilities::default(),
-            quantization_preflight: Value::Null,
-            quantization_job: None,
-            quantization_delivery_open: false,
-            quantization_source_kind: "huggingface".into(),
-            quantization_source: String::new(),
-            quantization_engine: "mlx_local".into(),
-            quantization_preset: "mlx-balanced".into(),
-            quantization_output: String::new(),
-            quantization_revision: String::new(),
-            quantization_bits: "4".into(),
-            quantization_group_size: "128".into(),
-            quantization_mode: "affine".into(),
-            quantization_algorithm: "awq".into(),
-            quantization_advanced_open: false,
+            agent_dashboard: Value::Null,
+            agent_feedback: String::new(),
+            agent_section: None,
+            agent_form: None,
+            agent_form_body: text_editor::Content::new(),
+            agent_form_message: String::new(),
+            agent_form_saving: false,
+            agent_action_panel_open: false,
+            agent_command_content,
+            agent_command_message: String::new(),
             workshed_capabilities: Value::Null,
             workshed_work_orders: Vec::new(),
             workshed_order: workshed_demo_order(),
@@ -708,6 +992,13 @@ impl cosmic::Application for TokenWorkshedApp {
             workshed_category: "models".into(),
             workshed_search: String::new(),
             workshed_selected_block: "load_model_demo".into(),
+            workshed_hovered_block: None,
+            workshed_pointer_position: None,
+            workshed_block_press: None,
+            workshed_drag_source: None,
+            workshed_drag_pointer_origin: None,
+            workshed_delete_drop_zone_active: false,
+            workshed_just_dragged_block: None,
             workshed_model_picker: None,
             workshed_model_results_open: false,
             workshed_option_search_due: None,
@@ -742,9 +1033,9 @@ impl cosmic::Application for TokenWorkshedApp {
         let mut tasks = Vec::new();
         if let Some(id) = app.core.main_window_id() {
             let title = if app.ide_companion {
-                "Token Workshed · IDE Companion"
+                "token-workshed NextCore · IDE Companion"
             } else {
-                "token-workshed"
+                "token-workshed NextCore"
             };
             tasks.push(app.set_window_title(title.into()));
             let init_ops = app.window_effects.init(id);
@@ -754,6 +1045,7 @@ impl cosmic::Application for TokenWorkshedApp {
         }
         tasks.push(app.refresh_config_task());
         tasks.push(app.refresh_manager_task());
+        tasks.push(app.refresh_server_connection_task());
         tasks.push(app.refresh_status_task());
         tasks.push(app.refresh_ide_connections_task());
         if app.current_page == Page::Community {
@@ -762,7 +1054,11 @@ impl cosmic::Application for TokenWorkshedApp {
         if app.current_page == Page::Workshed {
             tasks.push(app.refresh_workshed_task());
         }
-
+        if app.current_page == Page::Runtime {
+            tasks.push(app.refresh_runtime_task());
+            tasks.push(app.refresh_server_connection_task());
+            tasks.push(app.refresh_agent_dashboard_task());
+        }
         (app, cosmic::Task::batch(tasks))
     }
 
@@ -770,6 +1066,14 @@ impl cosmic::Application for TokenWorkshedApp {
         match message {
             Message::PagePressed(page) => {
                 self.chat_model_menu_open = false;
+                if page != Page::Workshed {
+                    self.workshed_hovered_block = None;
+                    self.workshed_pointer_position = None;
+                    self.workshed_block_press = None;
+                    self.workshed_drag_source = None;
+                    self.workshed_drag_pointer_origin = None;
+                    self.workshed_delete_drop_zone_active = false;
+                }
                 self.sidebar_bounce = Some(SidebarBounceState {
                     page,
                     started_at: Instant::now(),
@@ -781,14 +1085,17 @@ impl cosmic::Application for TokenWorkshedApp {
                         return cosmic::Task::batch(vec![
                             self.refresh_status_task(),
                             self.refresh_manager_task(),
+                            self.chat_feed_scroll_to_bottom_task(),
                         ]);
                     }
                     Page::Models => return self.refresh_manager_task(),
                     Page::Workshed => return self.refresh_workshed_task(),
-                    Page::Server => {
+                    Page::Runtime => {
                         return cosmic::Task::batch(vec![
                             self.refresh_manager_task(),
                             self.refresh_runtime_task(),
+                            self.refresh_server_connection_task(),
+                            self.refresh_agent_dashboard_task(),
                         ]);
                     }
                     Page::Community => {
@@ -829,21 +1136,19 @@ impl cosmic::Application for TokenWorkshedApp {
                         }
                     }
                 }
-                if let AgentProfileState::Configured { completed_at, .. } =
-                    &mut self.agent_profile_state
-                {
-                    if completed_at.as_ref().is_some_and(|at| {
-                        now.saturating_duration_since(*at) >= Duration::from_millis(420)
-                    }) {
-                        *completed_at = None;
-                    }
-                }
             }
             Message::PollTick(_) => {
-                return match self.current_page {
-                    Page::Chat | Page::Server => cosmic::Task::batch(vec![
+                let page_task = match self.current_page {
+                    Page::Chat => cosmic::Task::batch(vec![
                         self.refresh_status_task(),
                         self.refresh_manager_task(),
+                    ]),
+                    Page::Runtime => cosmic::Task::batch(vec![
+                        self.refresh_status_task(),
+                        self.refresh_manager_task(),
+                        self.refresh_server_connection_task(),
+                        self.refresh_runtime_task(),
+                        self.refresh_agent_dashboard_task(),
                     ]),
                     Page::Models => self.refresh_manager_task(),
                     Page::Workshed => self.refresh_workshed_task(),
@@ -854,11 +1159,7 @@ impl cosmic::Application for TokenWorkshedApp {
                     Page::Settings => self.refresh_ide_connections_task(),
                     Page::Logs | Page::About => cosmic::Task::none(),
                 };
-            }
-            Message::QuantizationJobTick(_) => {
-                if self.current_page == Page::Workshed {
-                    return self.refresh_workshed_run_task();
-                }
+                return cosmic::Task::batch(vec![page_task, self.refresh_server_connection_task()]);
             }
             Message::ConfigLoaded(result) => match result {
                 Ok(config) => {
@@ -880,8 +1181,8 @@ impl cosmic::Application for TokenWorkshedApp {
                     if !config.token_workshed_version.is_empty() {
                         self.token_workshed_version = config.token_workshed_version;
                     }
-                    if !config.vllm_mlx_version.is_empty() {
-                        self.vllm_mlx_version = config.vllm_mlx_version;
+                    if !config.sglang_version.is_empty() {
+                        self.sglang_version = config.sglang_version;
                     }
                     self.status_text = if config.manager_auth_required
                         && self.native_state.settings.manager_token.is_empty()
@@ -904,14 +1205,12 @@ impl cosmic::Application for TokenWorkshedApp {
                 match result {
                     Ok(data) => {
                         self.apply_manager_payload(data);
-                        if matches!(self.agent_profile_state, AgentProfileState::Unconfigured)
-                            && !self.current_profile_model().is_empty()
-                        {
-                            return self.refresh_agent_profile_task();
-                        }
                     }
                     Err(error) => {
                         self.manager_models = ManagerModelsPayload::default();
+                        if self.runtime_is_remote() {
+                            self.models.clear();
+                        }
                         self.status_text = format!("Desktop manager unavailable: {error}");
                     }
                 }
@@ -981,7 +1280,7 @@ impl cosmic::Application for TokenWorkshedApp {
                 let command = self.developer_terminal_input.trim().to_string();
                 if command.is_empty() {
                     self.developer_logs
-                        .push("vllm-mlx: enter a command first.".into());
+                        .push("nextcore: enter a command first.".into());
                     self.status_text = "Enter a terminal command first.".into();
                 } else {
                     self.developer_terminal_input.clear();
@@ -1001,7 +1300,7 @@ impl cosmic::Application for TokenWorkshedApp {
                     return self.refresh_developer_logs_task();
                 }
                 Err(error) => {
-                    self.developer_logs.push(format!("vllm-mlx: {error}"));
+                    self.developer_logs.push(format!("nextcore: {error}"));
                     self.status_text = format!("Terminal command failed: {error}");
                 }
             },
@@ -1023,13 +1322,328 @@ impl cosmic::Application for TokenWorkshedApp {
                     self.status_text = format!("Community search failed: {error}");
                 }
             },
+            Message::AgentRefreshPressed => return self.refresh_agent_dashboard_task(),
+            Message::AgentSectionPressed(section) => {
+                if self.agent_form_saving {
+                    return cosmic::Task::none();
+                }
+                if self.agent_section != Some(section) {
+                    self.agent_form = None;
+                    self.agent_form_message.clear();
+                }
+                self.agent_section = if self.agent_section == Some(section) {
+                    None
+                } else {
+                    Some(section)
+                };
+                self.agent_action_panel_open = false;
+            }
+            Message::AgentFormOpen(kind, data) => {
+                if self.agent_form_saving {
+                    return cosmic::Task::none();
+                }
+                let mut draft = AgentFormDraft::new(kind, data);
+                if kind == AgentFormKind::ScheduledTask
+                    && draft
+                        .fields
+                        .get("model_id")
+                        .is_none_or(|value| value.trim().is_empty())
+                {
+                    draft
+                        .fields
+                        .insert("model_id".into(), self.native_state.selected_model.clone());
+                }
+                self.agent_form_body = text_editor::Content::with_text(
+                    draft
+                        .fields
+                        .get(kind.long_field())
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                );
+                self.agent_form = Some(draft);
+                self.agent_form_message.clear();
+                self.agent_feedback.clear();
+                self.agent_action_panel_open = false;
+            }
+            Message::AgentFormFieldChanged(field, value) => {
+                if let Some(form) = &mut self.agent_form {
+                    form.fields.insert(field, value);
+                }
+            }
+            Message::AgentFormToggleChanged(field, enabled) => {
+                if let Some(form) = &mut self.agent_form {
+                    match field.as_str() {
+                        "enabled" => form.enabled = enabled,
+                        "computer_control" => form.computer_control = enabled,
+                        _ => {}
+                    }
+                }
+            }
+            Message::AgentFormBodyAction(action) => {
+                self.agent_form_body.perform(action);
+            }
+            Message::AgentFormSavePressed => {
+                if self.agent_form_saving {
+                    return cosmic::Task::none();
+                }
+                if self.runtime_is_remote() && !value_flag(self.server_connection.get("connected"))
+                {
+                    self.agent_form_message =
+                        "RoboServer is offline. Reconnect before saving Agent data.".into();
+                    return cosmic::Task::none();
+                }
+                let command = match self.agent_form_command() {
+                    Ok(command) => command,
+                    Err(error) => {
+                        self.agent_form_message = error;
+                        return cosmic::Task::none();
+                    }
+                };
+                self.agent_form_saving = true;
+                self.agent_form_message = "Saving…".into();
+                self.agent_feedback = "Saving Agent item…".into();
+                return wrap_app_task(cosmic::Task::perform(
+                    self.api_client().agent_action(command),
+                    Message::AgentFormSaved,
+                ));
+            }
+            Message::AgentFormSaved(result) => {
+                self.agent_form_saving = false;
+                match result {
+                    Ok(_value) => {
+                        self.agent_form = None;
+                        self.agent_form_message = "Saved.".into();
+                        self.agent_feedback = "Agent item saved.".into();
+                        if self.current_page == Page::Runtime {
+                            return self.refresh_agent_dashboard_task();
+                        }
+                    }
+                    Err(error) => {
+                        let message = format!("Could not save: {error}");
+                        self.agent_form_message = message.clone();
+                        self.agent_feedback = message;
+                    }
+                }
+            }
+            Message::AgentFormCancelPressed => {
+                if !self.agent_form_saving {
+                    self.agent_form = None;
+                    self.agent_form_message.clear();
+                }
+            }
+            Message::AgentActionPressed(command) => {
+                if self.runtime_is_remote() && !value_flag(self.server_connection.get("connected"))
+                {
+                    self.agent_feedback =
+                        "RoboServer is offline. Reconnect before running Agent actions.".into();
+                    return cosmic::Task::none();
+                }
+                let action = string_at(&command, "action");
+                if action.is_empty() {
+                    self.agent_feedback = "Agent action is missing its name.".into();
+                    return cosmic::Task::none();
+                }
+                self.agent_feedback =
+                    format!("Running Agent action: {}…", action.replace('_', " "));
+                return wrap_app_task(cosmic::Task::perform(
+                    self.api_client().agent_action(command),
+                    move |result| Message::AgentQuickActionLoaded { action, result },
+                ));
+            }
+            Message::AgentQuickActionLoaded { action, result } => match result {
+                Ok(value) => {
+                    self.agent_feedback = if action == "test_mcp_server" {
+                        let status = value
+                            .get("status")
+                            .map(|status| string_at(status, "state"))
+                            .unwrap_or_default();
+                        if status.is_empty() {
+                            "MCP connection check finished.".into()
+                        } else {
+                            format!("MCP connection: {status}.")
+                        }
+                    } else {
+                        format!("Agent action completed: {}.", action.replace('_', " "))
+                    };
+                    if self.current_page == Page::Runtime {
+                        return self.refresh_agent_dashboard_task();
+                    }
+                }
+                Err(error) => self.agent_feedback = format!("Agent action failed: {error}"),
+            },
+            Message::ServerSettingsToggled => {
+                self.server_settings_open = !self.server_settings_open;
+                self.server_settings_section = if self.server_settings_open {
+                    Some(ServerSettingsSection::Connection)
+                } else {
+                    None
+                };
+            }
+            Message::ServerSettingsSectionPressed(section) => {
+                self.server_settings_section = if self.server_settings_section == Some(section) {
+                    None
+                } else {
+                    Some(section)
+                };
+            }
+            Message::RuntimeTargetPressed(target) => {
+                if self.server_action_in_flight {
+                    return cosmic::Task::none();
+                }
+                if self.streaming_reply.is_some() {
+                    self.status_text =
+                        "Wait for the current response to finish before switching runtimes.".into();
+                    return cosmic::Task::none();
+                }
+                if target == "remote" {
+                    if value_flag(self.server_connection.get("connected")) {
+                        self.native_state.runtime_target = Some("remote".into());
+                        self.runtime_remote_setup_open = false;
+                        self.agent_feedback.clear();
+                        let profile = conversation_profile_for_connection(&self.server_connection);
+                        self.activate_conversation_profile(&profile);
+                        self.agent_dashboard = Value::Null;
+                        self.manager_models = ManagerModelsPayload::default();
+                        self.save_state();
+                        self.status_text = "Using RoboServer for models and Agent data.".into();
+                        return cosmic::Task::batch(vec![
+                            self.refresh_manager_task(),
+                            self.refresh_status_task(),
+                            self.refresh_runtime_task(),
+                            self.refresh_agent_dashboard_task(),
+                        ]);
+                    }
+                    self.runtime_remote_setup_open = true;
+                    self.server_settings_open = false;
+                    self.server_settings_section = None;
+                    if self.native_state.runtime_target.as_deref() != Some("remote") {
+                        self.status_text =
+                            "RoboServer is not connected. This Mac remains the active runtime until connection succeeds.".into();
+                    } else {
+                        self.status_text =
+                            "RoboServer is offline. Remote requests are paused until it reconnects.".into();
+                    }
+                } else if self.native_state.runtime_target.as_deref() == Some("remote")
+                    || matches!(
+                        string_at(&self.server_connection, "mode").as_str(),
+                        "remote" | "remote-disconnected"
+                    )
+                {
+                    self.server_action_in_flight = true;
+                    self.status_text = "Closing the SSH tunnel and switching to This Mac…".into();
+                    return wrap_app_task(cosmic::Task::perform(
+                        self.api_client().disconnect_remote_server(),
+                        |result| Message::RemoteServerActionLoaded {
+                            action: "disconnect".into(),
+                            result,
+                        },
+                    ));
+                } else {
+                    self.native_state.runtime_target = Some("local".into());
+                    self.runtime_remote_setup_open = false;
+                    self.agent_feedback.clear();
+                    self.activate_conversation_profile("local");
+                    self.agent_dashboard = Value::Null;
+                    self.manager_models = ManagerModelsPayload::default();
+                    self.save_state();
+                    self.status_text = "Using This Mac for models and Agent data.".into();
+                    return cosmic::Task::batch(vec![
+                        self.refresh_manager_task(),
+                        self.refresh_status_task(),
+                        self.refresh_runtime_task(),
+                        self.refresh_agent_dashboard_task(),
+                    ]);
+                }
+            }
+            Message::AgentActionPanelToggled => {
+                self.agent_action_panel_open = !self.agent_action_panel_open;
+            }
+            Message::AgentCommandAction(action) => {
+                self.agent_command_content.perform(action);
+            }
+            Message::AgentCommandTemplate(command) => {
+                self.agent_command_content = text_editor::Content::with_text(&command);
+                self.agent_action_panel_open = true;
+                self.agent_command_message = "Review the action details, then run it.".into();
+            }
+            Message::AgentCommandPressed => {
+                if self.runtime_is_remote() && !value_flag(self.server_connection.get("connected"))
+                {
+                    self.agent_command_message =
+                        "RoboServer is offline. Reconnect before running Agent actions.".into();
+                    return cosmic::Task::none();
+                }
+                let text = self.agent_command_content.text();
+                let command: Value = match serde_json::from_str::<Value>(&text) {
+                    Ok(value) if value.is_object() => value,
+                    Ok(_) => {
+                        self.agent_command_message = "Agent action must be a JSON object.".into();
+                        return cosmic::Task::none();
+                    }
+                    Err(error) => {
+                        self.agent_command_message = format!("Invalid JSON: {error}");
+                        return cosmic::Task::none();
+                    }
+                };
+                self.agent_command_message = "Running Agent action…".into();
+                return wrap_app_task(cosmic::Task::perform(
+                    self.api_client().agent_action(command),
+                    Message::AgentCommandLoaded,
+                ));
+            }
+            Message::AgentCommandLoaded(result) => match result {
+                Ok(value) => {
+                    self.agent_command_message = serde_json::to_string_pretty(&value)
+                        .unwrap_or_else(|_| "Agent action completed.".into());
+                    return self.refresh_agent_dashboard_task();
+                }
+                Err(error) => self.agent_command_message = format!("Agent action failed: {error}"),
+            },
+            Message::AgentDashboardLoaded(result) => {
+                self.agent_refresh_in_flight = false;
+                match result {
+                    Ok(value) => {
+                        self.agent_dashboard = value;
+                    }
+                    Err(error) => {
+                        self.agent_dashboard = Value::Null;
+                        self.agent_feedback = format!("Agent data unavailable: {error}");
+                    }
+                }
+            }
+            Message::AgentReindexFinished(result) => match result {
+                Ok(()) => {}
+                Err(_) => self.agent_reindexed_profile.clear(),
+            },
             Message::CommunityJobLoaded(result) => {
                 self.community_job_refresh_in_flight = false;
                 match result {
                     Ok(job) => {
+                        let previous_status = self
+                            .community_job
+                            .as_ref()
+                            .map(|value| string_at(value, "status"));
                         self.community_job = normalize_community_job(job);
                         if self.community_job.is_some() {
                             self.community_job_message.clear();
+                        }
+                        let just_downloaded = self.community_job.as_ref().is_some_and(|value| {
+                            string_at(value, "status") == "completed"
+                                && previous_status.as_deref() != Some("completed")
+                        });
+                        if just_downloaded
+                            && self.community_search_has_run
+                            && !self.community_search_in_flight
+                        {
+                            self.community_search_in_flight = true;
+                            let query = self.community_query.trim().to_string();
+                            return cosmic::Task::batch(vec![
+                                wrap_app_task(cosmic::Task::perform(
+                                    self.api_client().community_search(query),
+                                    Message::CommunitySearchLoaded,
+                                )),
+                                self.refresh_manager_task(),
+                            ]);
                         }
                     }
                     Err(error) => {
@@ -1038,89 +1652,18 @@ impl cosmic::Application for TokenWorkshedApp {
                     }
                 }
             }
-            Message::CommunityDeployLoaded(result) | Message::CommunityJobActionLoaded(result) => {
-                match result {
-                    Ok(job) => {
-                        self.community_job = normalize_community_job(job);
-                        self.community_job_message = String::new();
-                        self.status_text = "Community job updated.".into();
-                        return self.refresh_manager_task();
-                    }
-                    Err(error) => {
-                        self.community_job_message = format!("Job request failed: {error}");
-                        self.status_text = format!("Community job error: {error}");
-                    }
-                }
-            }
-            Message::QuantizationCapabilitiesLoaded(result) => {
-                self.quantization_capabilities_refresh_in_flight = false;
-                match result {
-                    Ok(capabilities) => {
-                        self.quantization_capabilities = capabilities;
-                        self.status_text = "Quantization capabilities loaded.".into();
-                    }
-                    Err(error) => {
-                        self.status_text = format!("Quantization capabilities unavailable: {error}")
-                    }
-                }
-            }
-            Message::QuantizationPreflightLoaded(result) => match result {
-                Ok(value) => {
-                    let ok = value.get("ok").and_then(Value::as_bool).unwrap_or(false);
-                    self.quantization_preflight = value;
-                    self.status_text = if ok {
-                        "Preflight passed. The quantization job can start.".into()
-                    } else {
-                        "Preflight found issues. Review the warnings on the right.".into()
-                    };
-                }
-                Err(error) => {
-                    self.quantization_preflight = Value::Null;
-                    self.status_text = format!("Quantization preflight failed: {error}");
-                }
-            },
-            Message::QuantizationStarted(result) => match result {
+            Message::CommunityDownloadLoaded(result)
+            | Message::CommunityJobActionLoaded(result) => match result {
                 Ok(job) => {
-                    self.quantization_job = Some(job);
-                    self.quantization_delivery_open = false;
-                    self.status_text = "Quantization job started.".into();
-                    self.quantization_preflight = Value::Null;
-                }
-                Err(error) => self.status_text = format!("Could not start quantization: {error}"),
-            },
-            Message::QuantizationJobLoaded(result) => {
-                self.quantization_job_refresh_in_flight = false;
-                match result {
-                    Ok(job) => {
-                        let was_awaiting_delivery = self
-                            .quantization_job
-                            .as_ref()
-                            .is_some_and(|current| current.status == "awaiting_delivery");
-                        if job.status == "awaiting_delivery" && !was_awaiting_delivery {
-                            self.quantization_delivery_open = true;
-                        }
-                        self.quantization_job = Some(job);
-                    }
-                    Err(error) => {
-                        self.status_text = format!("Quantization job update failed: {error}")
-                    }
-                }
-            }
-            Message::QuantizationActionLoaded(result) => match result {
-                Ok(job) => {
-                    self.quantization_job = Some(job);
-                    self.status_text = "Quantization job action sent.".into();
-                }
-                Err(error) => self.status_text = format!("Quantization action failed: {error}"),
-            },
-            Message::QuantizationDeliveryLoaded(result) => match result {
-                Ok(job) => {
-                    self.quantization_delivery_open = job.status != "awaiting_delivery";
-                    self.quantization_job = Some(job);
-                    self.status_text = "Delivery choice applied.".into();
+                    self.community_job = normalize_community_job(job);
+                    self.community_job_message = String::new();
+                    self.status_text = "Community job updated.".into();
                     return self.refresh_manager_task();
                 }
-                Err(error) => self.status_text = format!("Delivery failed: {error}"),
+                Err(error) => {
+                    self.community_job_message = format!("Job request failed: {error}");
+                    self.status_text = format!("Community job error: {error}");
+                }
             },
             Message::WorkshedCapabilitiesLoaded(result) => match result {
                 Ok(value) => {
@@ -1324,6 +1867,23 @@ impl cosmic::Application for TokenWorkshedApp {
             Message::WorkshedCategoryPressed(category) => self.workshed_category = category,
             Message::WorkshedSearchChanged(value) => self.workshed_search = value,
             Message::WorkshedBlockSelectPressed(block_id) => {
+                if self
+                    .workshed_just_dragged_block
+                    .as_ref()
+                    .is_some_and(|(dragged_id, until)| {
+                        dragged_id == &block_id && Instant::now() < *until
+                    })
+                {
+                    self.workshed_just_dragged_block = None;
+                    return cosmic::Task::none();
+                }
+                if self
+                    .workshed_just_dragged_block
+                    .as_ref()
+                    .is_some_and(|(_, until)| Instant::now() >= *until)
+                {
+                    self.workshed_just_dragged_block = None;
+                }
                 if self.workshed_selected_block != block_id {
                     self.workshed_model_picker = None;
                     self.workshed_model_results_open = false;
@@ -1387,6 +1947,21 @@ impl cosmic::Application for TokenWorkshedApp {
             }
             Message::WorkshedBlockDeletePressed(block_id) => {
                 workshed_delete_block(&mut self.workshed_order, &block_id);
+                if self.workshed_hovered_block.as_deref() == Some(block_id.as_str()) {
+                    self.workshed_hovered_block = None;
+                }
+                if self
+                    .workshed_block_press
+                    .as_ref()
+                    .is_some_and(|press| press.block_id == block_id)
+                {
+                    self.workshed_block_press = None;
+                }
+                if self.workshed_drag_source.as_deref() == Some(block_id.as_str()) {
+                    self.workshed_drag_source = None;
+                    self.workshed_drag_pointer_origin = None;
+                    self.workshed_delete_drop_zone_active = false;
+                }
                 if self.workshed_selected_block == block_id {
                     self.workshed_selected_block.clear();
                     self.workshed_model_picker = None;
@@ -1407,10 +1982,117 @@ impl cosmic::Application for TokenWorkshedApp {
                     .retain(|key| !key.starts_with(&format!("{block_id}\u{1f}")));
                 self.workshed_mark_dirty();
             }
+            Message::WorkshedBlockPointerEntered(block_id) => {
+                self.workshed_hovered_block = Some(block_id);
+            }
+            Message::WorkshedBlockPointerExited(block_id) => {
+                if self.workshed_hovered_block.as_deref() == Some(block_id.as_str()) {
+                    self.workshed_hovered_block = None;
+                }
+            }
+            Message::WorkshedDeleteDropZoneEntered => {
+                self.workshed_delete_drop_zone_active = self.workshed_drag_source.is_some();
+            }
+            Message::WorkshedDeleteDropZoneExited => {
+                self.workshed_delete_drop_zone_active = false;
+            }
+            Message::WorkshedPointerMoved { x, y } => {
+                self.workshed_pointer_position = Some((x, y));
+                let now = Instant::now();
+                let mut drag_source = None;
+                if let Some(press) = self.workshed_block_press.as_mut() {
+                    if !press.dragging {
+                        let held_long_enough =
+                            now.duration_since(press.started_at) >= WORKSHED_BLOCK_LONG_PRESS;
+                        let distance = if let Some((origin_x, origin_y)) = press.pointer_origin {
+                            Some(((x - origin_x).powi(2) + (y - origin_y).powi(2)).sqrt())
+                        } else {
+                            press.pointer_origin = Some((x, y));
+                            None
+                        };
+                        if held_long_enough
+                            && (distance
+                                .is_none_or(|distance| distance > WORKSHED_BLOCK_DRAG_THRESHOLD))
+                        {
+                            press.dragging = true;
+                            drag_source = Some(press.block_id.clone());
+                        }
+                    }
+                }
+                if let Some(source_id) = drag_source {
+                    self.workshed_begin_block_drag(source_id);
+                }
+            }
+            Message::WorkshedPointerPressed => {
+                let Some(block_id) = self.workshed_hovered_block.clone() else {
+                    return cosmic::Task::none();
+                };
+                if !workshed_block_is_unlocked(&self.workshed_order, &block_id) {
+                    return cosmic::Task::none();
+                }
+                self.workshed_just_dragged_block = None;
+                self.workshed_drag_source = None;
+                self.workshed_drag_pointer_origin = None;
+                self.workshed_delete_drop_zone_active = false;
+                self.workshed_block_press = Some(WorkshedBlockPress {
+                    block_id,
+                    started_at: Instant::now(),
+                    pointer_origin: self.workshed_pointer_position,
+                    dragging: false,
+                });
+            }
+            Message::WorkshedPointerReleased => {
+                let Some(press) = self.workshed_block_press.take() else {
+                    return cosmic::Task::none();
+                };
+                let was_dragging = press.dragging;
+                let source_id = press.block_id;
+                let delete_drop_zone_active = self.workshed_delete_drop_zone_active;
+                self.workshed_drag_source = None;
+                self.workshed_drag_pointer_origin = None;
+                self.workshed_delete_drop_zone_active = false;
+                if was_dragging {
+                    self.workshed_just_dragged_block = Some((
+                        source_id.clone(),
+                        Instant::now() + Duration::from_millis(250),
+                    ));
+                    if delete_drop_zone_active
+                        && workshed_block_is_unlocked(&self.workshed_order, &source_id)
+                    {
+                        self.status_text = "Block deleted.".into();
+                        return self.update(Message::WorkshedBlockDeletePressed(source_id));
+                    } else {
+                        self.status_text = "Drop in the red area to delete; block kept.".into();
+                    }
+                }
+            }
+            Message::WorkshedPointerLeft => {
+                self.workshed_hovered_block = None;
+                self.workshed_pointer_position = None;
+                self.workshed_block_press = None;
+                self.workshed_drag_source = None;
+                self.workshed_drag_pointer_origin = None;
+                self.workshed_delete_drop_zone_active = false;
+            }
             Message::WorkshedDeleteSelectedPressed => {
                 let block_id = self.workshed_selected_block.clone();
                 if !block_id.is_empty() {
                     workshed_delete_block(&mut self.workshed_order, &block_id);
+                    if self.workshed_hovered_block.as_deref() == Some(block_id.as_str()) {
+                        self.workshed_hovered_block = None;
+                    }
+                    if self
+                        .workshed_block_press
+                        .as_ref()
+                        .is_some_and(|press| press.block_id == block_id)
+                    {
+                        self.workshed_block_press = None;
+                    }
+                    if self.workshed_drag_source.as_deref() == Some(block_id.as_str()) {
+                        self.workshed_drag_source = None;
+                        self.workshed_drag_pointer_origin = None;
+                        self.workshed_delete_drop_zone_active = false;
+                    }
                     self.workshed_selected_block.clear();
                     self.workshed_model_picker = None;
                     self.workshed_model_results_open = false;
@@ -1630,6 +2312,26 @@ impl cosmic::Application for TokenWorkshedApp {
             }
             Message::WorkshedSaveTick(now) => {
                 let mut tasks = Vec::with_capacity(2);
+                let pointer_position = self.workshed_pointer_position;
+                let mut drag_source = None;
+                if let Some(press) = self.workshed_block_press.as_mut()
+                    && !press.dragging
+                    && now.duration_since(press.started_at) >= WORKSHED_BLOCK_LONG_PRESS
+                {
+                    let moved_while_held = press.pointer_origin.zip(pointer_position).is_some_and(
+                        |((origin_x, origin_y), (x, y))| {
+                            ((x - origin_x).powi(2) + (y - origin_y).powi(2)).sqrt()
+                                > WORKSHED_BLOCK_DRAG_THRESHOLD
+                        },
+                    );
+                    if moved_while_held {
+                        press.dragging = true;
+                        drag_source = Some(press.block_id.clone());
+                    }
+                }
+                if let Some(source_id) = drag_source {
+                    self.workshed_begin_block_drag(source_id);
+                }
                 if self.workshed_save_due.is_some_and(|due| now >= due)
                     && !self.workshed_save_in_flight
                 {
@@ -1764,172 +2466,6 @@ impl cosmic::Application for TokenWorkshedApp {
                     self.status_text = format!("IDE authorization revoke failed: {error}")
                 }
             },
-            Message::AgentProfileLoaded { model, result } => {
-                self.agent_profile_refresh_in_flight = false;
-                if !same_agent_profile_model(&model, &self.current_profile_model()) {
-                    return cosmic::Task::none();
-                }
-                match result {
-                    Ok(payload) => {
-                        if payload.configured {
-                            self.agent_profile_state = AgentProfileState::Configured {
-                                profile: payload.profile.unwrap_or(Value::Null),
-                                completed_at: None,
-                            };
-                        } else if !self.agent_profile_state.is_configuring() {
-                            self.agent_profile_state = AgentProfileState::Unconfigured;
-                        }
-                    }
-                    Err(error) => {
-                        if !self.agent_profile_state.is_configuring() {
-                            self.agent_profile_state = AgentProfileState::Failed {
-                                message: error.clone(),
-                            };
-                        }
-                    }
-                }
-            }
-            Message::AgentProfileConfigureStarted { model, result } => {
-                if !same_agent_profile_model(&model, &self.current_profile_model()) {
-                    return cosmic::Task::none();
-                }
-                match result {
-                    Ok(payload) => {
-                        if payload.reused {
-                            self.agent_profile_state = AgentProfileState::Configured {
-                                profile: payload.profile.unwrap_or(Value::Null),
-                                completed_at: Some(Instant::now()),
-                            };
-                            self.status_text = "Agent Profile already configured.".into();
-                        } else if let Some(job) = payload.job {
-                            self.agent_profile_state = AgentProfileState::Configuring {
-                                job_id: if payload.job_id.is_empty() {
-                                    job.job_id
-                                } else {
-                                    payload.job_id
-                                },
-                                progress: job.progress,
-                                phase: job.phase,
-                            };
-                            self.status_text = "Configuring OpenClaw and Hermes...".into();
-                        } else if !payload.job_id.is_empty() {
-                            self.agent_profile_state = AgentProfileState::Configuring {
-                                job_id: payload.job_id,
-                                progress: 0.0,
-                                phase: "metadata".into(),
-                            };
-                            self.status_text = "Configuring OpenClaw and Hermes...".into();
-                        } else {
-                            self.agent_profile_state = AgentProfileState::Failed {
-                                message: "Backend returned no Agent Profile job.".into(),
-                            };
-                        }
-                    }
-                    Err(error) => {
-                        self.agent_profile_state = AgentProfileState::Failed {
-                            message: error.clone(),
-                        };
-                        self.status_text = format!("Agent Profile configuration failed: {error}");
-                    }
-                }
-            }
-            Message::AgentProfilePollTick(_) => {
-                let job_id = match &self.agent_profile_state {
-                    AgentProfileState::Configuring { job_id, .. } if !job_id.trim().is_empty() => {
-                        Some(job_id.clone())
-                    }
-                    _ => None,
-                };
-                if let Some(job_id) = job_id {
-                    return self.refresh_agent_profile_job_task(job_id);
-                }
-            }
-            Message::AgentProfileJobLoaded { model, result } => {
-                self.agent_profile_refresh_in_flight = false;
-                if !same_agent_profile_model(&model, &self.current_profile_model()) {
-                    return cosmic::Task::none();
-                }
-                let AgentProfileState::Configuring { job_id, .. } = &self.agent_profile_state
-                else {
-                    return cosmic::Task::none();
-                };
-                if let Ok(job) = &result {
-                    if (!job.model.is_empty()
-                        && !same_agent_profile_model(&job.model, &self.current_profile_model()))
-                        || job_id.is_empty()
-                        || job_id != &job.job_id
-                    {
-                        return cosmic::Task::none();
-                    }
-                } else if job_id.is_empty() {
-                    return cosmic::Task::none();
-                }
-                match result {
-                    Ok(job) => match job.state.as_str() {
-                        "configured" => {
-                            let profile = job.profile.unwrap_or(Value::Null);
-                            let limited_tools = profile_has_degraded_tools(&profile);
-                            self.agent_profile_state = AgentProfileState::Configured {
-                                profile,
-                                completed_at: Some(Instant::now()),
-                            };
-                            self.status_text = if limited_tools {
-                                "AI agents configured; structured tool calls are limited for this model.".into()
-                            } else {
-                                "AI agents configured for this model.".into()
-                            };
-                        }
-                        "failed" => {
-                            let message = if job.error.trim().is_empty() {
-                                "OpenClaw or Hermes calibration failed. Retry Configure AI agents."
-                                    .into()
-                            } else {
-                                job.error
-                            };
-                            self.agent_profile_state = AgentProfileState::Failed {
-                                message: message.clone(),
-                            };
-                            self.status_text = format!("Agent Profile failed: {message}");
-                        }
-                        _ => {
-                            let phase = job.phase;
-                            let progress = job.progress;
-                            self.agent_profile_state = AgentProfileState::Configuring {
-                                job_id: job.job_id,
-                                progress,
-                                phase: phase.clone(),
-                            };
-                            self.status_text = format!(
-                                "Configuring Agent Profile · {} ({:.0}%)",
-                                phase, progress,
-                            );
-                        }
-                    },
-                    Err(error) => {
-                        self.agent_profile_state = AgentProfileState::Failed {
-                            message: error.clone(),
-                        };
-                        self.status_text = format!("Agent Profile status failed: {error}");
-                    }
-                }
-            }
-            Message::AgentProfileDeleted { model, result } => {
-                if !same_agent_profile_model(&model, &self.current_profile_model()) {
-                    return cosmic::Task::none();
-                }
-                match result {
-                    Ok(_) => {
-                        self.native_state.settings.openclaw_enabled = false;
-                        self.native_state.settings.agent_runtime = "auto".into();
-                        self.agent_profile_state = AgentProfileState::Unconfigured;
-                        self.status_text = "Agent Profile deleted; model weights were kept.".into();
-                        self.save_state();
-                    }
-                    Err(error) => {
-                        self.status_text = format!("Agent Profile delete failed: {error}")
-                    }
-                }
-            }
             Message::ChatStreamUpdate { request_id, event } => {
                 if self
                     .streaming_reply
@@ -1941,47 +2477,98 @@ impl cosmic::Application for TokenWorkshedApp {
                 }
                 match event {
                     ChatStreamEvent::Start => {
+                        self.chat_agent_status = None;
                         self.status_text = "Model is responding...".into();
                         self.advance_stream_reveal(Instant::now());
                     }
-                    ChatStreamEvent::ThinkingDelta(text) => {
-                        if !text.trim().is_empty() {
-                            self.mark_thinking_started(Instant::now());
-                            self.append_stream_thinking(&text);
-                            self.status_text = format!(
-                                "Thinking: {}",
-                                text.lines()
-                                    .next()
-                                    .unwrap_or("")
-                                    .chars()
-                                    .take(80)
-                                    .collect::<String>()
-                            );
-                        }
-                        self.advance_stream_reveal(Instant::now());
-                    }
                     ChatStreamEvent::AnswerDelta(text) => {
-                        self.mark_thinking_finished(Instant::now());
+                        self.chat_agent_status = None;
                         if let Some(stream) = &mut self.streaming_reply {
-                            stream.received.push_str(&text);
+                            append_streaming_delta(stream, &text);
                         }
                         self.status_text = "Streaming response...".into();
                         self.advance_stream_reveal(Instant::now());
                     }
+                    ChatStreamEvent::AnswerReplace(text) => {
+                        self.chat_agent_status = None;
+                        if let Some(stream) = &mut self.streaming_reply {
+                            replace_streaming_answer(stream, text);
+                        }
+                        self.status_text = "Finalizing response...".into();
+                        self.advance_stream_reveal(Instant::now());
+                    }
+                    ChatStreamEvent::ToolStatus(message) => {
+                        let conversation_id = self
+                            .streaming_reply
+                            .as_ref()
+                            .map(|stream| stream.conversation_id.clone())
+                            .unwrap_or_default();
+                        self.chat_agent_status = Some(ChatAgentStatus {
+                            conversation_id,
+                            message: message.clone(),
+                        });
+                        self.status_text = message;
+                    }
+                    ChatStreamEvent::ToolResults {
+                        message, results, ..
+                    } => {
+                        let status = if message.trim().is_empty() {
+                            format!(
+                                "Found {} web results. Preparing a cited reply…",
+                                results.len()
+                            )
+                        } else {
+                            format!("{message} Preparing a cited reply…")
+                        };
+                        let conversation_id = self
+                            .streaming_reply
+                            .as_ref()
+                            .map(|stream| stream.conversation_id.clone())
+                            .unwrap_or_default();
+                        self.chat_agent_status = Some(ChatAgentStatus {
+                            conversation_id,
+                            message: status.clone(),
+                        });
+                        self.status_text = status;
+                    }
+                    ChatStreamEvent::ToolAttachment(attachment) => {
+                        let target = self
+                            .streaming_reply
+                            .as_ref()
+                            .map(|stream| (stream.conversation_id.clone(), stream.message_index));
+                        if let Some((conversation_id, message_index)) = target {
+                            let label = capture_attachment_label(&attachment);
+                            match self.store.save_capture_image(
+                                &attachment.mime_type,
+                                &attachment.base64,
+                                &label,
+                            ) {
+                                Ok(saved) => {
+                                    self.append_chat_attachment(
+                                        &conversation_id,
+                                        message_index,
+                                        saved,
+                                    );
+                                    self.status_text = "Screen capture attached to chat.".into();
+                                    self.save_state();
+                                }
+                                Err(error) => {
+                                    self.status_text =
+                                        format!("Screen capture could not be displayed: {error}");
+                                }
+                            }
+                        }
+                    }
                     ChatStreamEvent::Done(result) => {
+                        self.chat_agent_status = None;
                         let request_model_is_current =
                             self.streaming_reply.as_ref().is_some_and(|stream| {
-                                same_agent_profile_model(
-                                    &stream.request_model,
-                                    &self.current_profile_model(),
-                                )
+                                same_model_id(&stream.request_model, &self.current_model_id())
                             });
-                        self.mark_thinking_finished(Instant::now());
                         self.success_count += 1;
                         if let Some(stream) = &mut self.streaming_reply {
-                            if stream.received.trim().is_empty() && !result.reply.trim().is_empty()
-                            {
-                                stream.received = result.reply.clone();
+                            if !result.reply.trim().is_empty() {
+                                replace_streaming_answer(stream, result.reply.clone());
                             } else if stream.received.trim().is_empty() {
                                 stream.received = "No response returned.".into();
                             }
@@ -2000,10 +2587,13 @@ impl cosmic::Application for TokenWorkshedApp {
                         if self.advance_stream_reveal(Instant::now()) {
                             self.save_state();
                         }
-                        return self.refresh_status_task();
+                        return cosmic::Task::batch(vec![
+                            self.refresh_status_task(),
+                            self.chat_feed_scroll_to_bottom_task(),
+                        ]);
                     }
                     ChatStreamEvent::Error(error) => {
-                        self.mark_thinking_finished(Instant::now());
+                        self.chat_agent_status = None;
                         self.error_count += 1;
                         if let Some(stream) = &mut self.streaming_reply {
                             if !stream.received.trim().is_empty() {
@@ -2020,17 +2610,23 @@ impl cosmic::Application for TokenWorkshedApp {
                         }
                     }
                 }
+                return self.chat_feed_scroll_to_bottom_task();
             }
             Message::ChatRevealTick(now) => {
+                let stream_is_active = self.streaming_reply.is_some();
                 if self.advance_stream_reveal(now) {
                     self.save_state();
                 }
+                if stream_is_active {
+                    return self.chat_feed_scroll_to_bottom_task();
+                }
+                return cosmic::Task::none();
             }
             Message::SwitchModelLoaded { model, result } => {
                 // A model switch request may finish after a user picked
                 // another model. Do not let its manager result restore the
-                // old model/profile/runtime selection over the newer choice.
-                if !same_agent_profile_model(&model, &self.current_profile_model()) {
+                // old model/runtime selection over the newer choice.
+                if !same_model_id(&model, &self.current_model_id()) {
                     return cosmic::Task::none();
                 }
                 match result {
@@ -2041,7 +2637,6 @@ impl cosmic::Application for TokenWorkshedApp {
                             data.active_model.clone()
                         };
                         let switch_error = model_switch_failure(&data);
-                        let switch_succeeded = switch_error.is_none();
                         self.apply_manager_payload(data);
                         if switch_error.is_some() {
                             self.restore_pending_model_switch();
@@ -2061,9 +2656,6 @@ impl cosmic::Application for TokenWorkshedApp {
                         };
                         self.status_text = notice.clone();
                         self.set_model_switch_notice(notice, Some(Duration::from_millis(1000)));
-                        if switch_succeeded {
-                            return self.refresh_agent_profile_task();
-                        }
                     }
                     Err(error) => {
                         self.restore_pending_model_switch();
@@ -2081,10 +2673,9 @@ impl cosmic::Application for TokenWorkshedApp {
                             self.native_state.selected_local_model.clear();
                         }
                         if self.native_state.selected_model == model {
-                            self.native_state.selected_model =
-                                self.models.first().cloned().unwrap_or_default();
+                            let next_model = self.models.first().cloned().unwrap_or_default();
+                            self.native_state.selected_model = next_model;
                         }
-                        self.agent_profile_state = AgentProfileState::Unconfigured;
                         self.status_text = format!("Deleted local model '{model}'.");
                         self.save_state();
                     }
@@ -2146,6 +2737,24 @@ impl cosmic::Application for TokenWorkshedApp {
             }
             Message::ServerUrlChanged(value) => self.native_state.settings.server_url = value,
             Message::ManagerTokenChanged(value) => self.native_state.settings.manager_token = value,
+            Message::RemoteServerHostChanged(value) => {
+                self.native_state.settings.remote_server_host = value;
+                self.inspected_host_fingerprint.clear();
+                self.remote_host_key_changed = false;
+            }
+            Message::RemoteServerUsernameChanged(value) => {
+                self.native_state.settings.remote_server_username = value;
+                self.inspected_host_fingerprint.clear();
+                self.remote_host_key_changed = false;
+            }
+            Message::RemoteServerPortChanged(value) => {
+                self.native_state.settings.remote_server_port = value;
+                self.inspected_host_fingerprint.clear();
+                self.remote_host_key_changed = false;
+            }
+            Message::RemoteServerIdentityChanged(value) => {
+                self.native_state.settings.remote_server_identity_file = value;
+            }
             Message::MaxTokensChanged(value) => self.max_tokens_input = value,
             Message::TemperatureChanged(value) => self.temperature_input = value,
             Message::TemperatureSliderChanged(value) => {
@@ -2185,127 +2794,11 @@ impl cosmic::Application for TokenWorkshedApp {
                 ));
             }
             Message::CommunityQueryChanged(value) => self.community_query = value,
-            Message::QuantizationSourceKindChanged(value) => {
-                if self.quantization_engine == "vllm_cuda" && value == "local_path" {
-                    self.status_text = "CUDA Worker accepts Hub sources only.".into();
-                    return cosmic::Task::none();
-                }
-                self.quantization_source_kind = if value == "local_path" {
-                    "local_path".into()
-                } else {
-                    "huggingface".into()
-                };
-                self.quantization_preflight = Value::Null;
-            }
-            Message::QuantizationSourceChanged(value) => {
-                self.quantization_source = value;
-                self.quantization_preflight = Value::Null;
-            }
-            Message::QuantizationEngineChanged(value) => {
-                self.quantization_engine = if value == "vllm_cuda" {
-                    "vllm_cuda".into()
-                } else {
-                    "mlx_local".into()
-                };
-                if self.quantization_engine == "vllm_cuda" {
-                    self.quantization_source_kind = "huggingface".into();
-                }
-                self.quantization_preset = if self.quantization_engine == "vllm_cuda" {
-                    "cuda-balanced".into()
-                } else {
-                    "mlx-balanced".into()
-                };
-                self.quantization_algorithm = if self.quantization_engine == "vllm_cuda" {
-                    "awq".into()
-                } else {
-                    String::new()
-                };
-                self.quantization_mode = if self.quantization_engine == "vllm_cuda" {
-                    "compressed-tensors".into()
-                } else {
-                    "affine".into()
-                };
-                self.quantization_preflight = Value::Null;
-            }
-            Message::QuantizationPresetChanged(value) => {
-                self.quantization_preset = value.clone();
-                let selected_preset = self
-                    .quantization_capabilities
-                    .engines
-                    .iter()
-                    .find(|engine| {
-                        engine.get("id").and_then(Value::as_str)
-                            == Some(self.quantization_engine.as_str())
-                    })
-                    .and_then(|engine| engine.get("presets"))
-                    .and_then(Value::as_array)
-                    .and_then(|presets| {
-                        presets.iter().find(|preset| {
-                            preset.get("id").and_then(Value::as_str) == Some(value.as_str())
-                        })
-                    })
-                    .cloned();
-                if let Some(preset) = selected_preset {
-                    if let Some(bits) = preset.get("bits").and_then(Value::as_u64) {
-                        self.quantization_bits = bits.to_string();
-                    }
-                    if let Some(group_size) = preset.get("group_size").and_then(Value::as_u64) {
-                        self.quantization_group_size = group_size.to_string();
-                    }
-                    if let Some(mode) = preset.get("mode").and_then(Value::as_str) {
-                        self.quantization_mode = mode.to_string();
-                    }
-                    if let Some(algorithm) = preset.get("algorithm").and_then(Value::as_str) {
-                        self.quantization_algorithm = algorithm.to_string();
-                    }
-                }
-                self.quantization_preflight = Value::Null;
-            }
-            Message::QuantizationOutputChanged(value) => {
-                self.quantization_output = value;
-                self.quantization_preflight = Value::Null;
-            }
-            Message::QuantizationRevisionChanged(value) => {
-                self.quantization_revision = value;
-                self.quantization_preflight = Value::Null;
-            }
-            Message::QuantizationBitsChanged(value) => {
-                self.quantization_bits = value;
-                self.quantization_preflight = Value::Null;
-            }
-            Message::QuantizationGroupSizeChanged(value) => {
-                self.quantization_group_size = value;
-                self.quantization_preflight = Value::Null;
-            }
-            Message::QuantizationModeChanged(value) => {
-                self.quantization_mode = value;
-                self.quantization_preflight = Value::Null;
-            }
-            Message::QuantizationAlgorithmChanged(value) => {
-                self.quantization_algorithm = value;
-                self.quantization_preflight = Value::Null;
-            }
-            Message::QuantizationAdvancedToggled => {
-                self.quantization_advanced_open = !self.quantization_advanced_open;
-            }
             Message::HfUsernameChanged(value) => self.hf_username = value,
             Message::HfTokenChanged(value) => self.hf_token = value,
-            Message::RuntimeBoolChanged(field, value) => match field {
-                RuntimeBoolField::ContinuousBatching => {
-                    self.runtime_config.continuous_batching = value
-                }
-                RuntimeBoolField::PagedCache => self.runtime_config.use_paged_cache = value,
-                RuntimeBoolField::KvCacheQuantization => {
-                    self.runtime_config.kv_cache_quantization = value
-                }
-                RuntimeBoolField::EnableMtp => self.runtime_config.enable_mtp = value,
-            },
-            Message::RuntimeTextChanged(field, value) => match field {
-                RuntimeTextField::ChunkedPrefill => {
-                    self.runtime_config.chunked_prefill_tokens = value
-                }
-                RuntimeTextField::MtpDraft => self.runtime_config.mtp_draft_tokens = value,
-            },
+            Message::RuntimeTextChanged(_, value) => {
+                self.runtime_config.chunked_prefill_tokens = value
+            }
             Message::ToggleConcurrentModel(model) => {
                 if self
                     .selected_concurrent_models
@@ -2319,11 +2812,30 @@ impl cosmic::Application for TokenWorkshedApp {
                 }
             }
             Message::SendPressed => return self.send_chat_task(),
-            Message::AttachMediaPressed => {
+            Message::StopChatPressed => {
+                let Some(run_id) = self
+                    .streaming_reply
+                    .as_ref()
+                    .map(|stream| stream.run_id.clone())
+                else {
+                    return cosmic::Task::none();
+                };
+                self.status_text = "Stopping current task…".into();
                 return wrap_app_task(cosmic::Task::perform(
-                    async { pick_media_files() },
-                    Message::AttachMediaLoaded,
+                    self.api_client().cancel_chat(run_id),
+                    Message::ChatCancelCompleted,
                 ));
+            }
+            Message::ChatCancelCompleted(result) => {
+                self.status_text = match result {
+                    Ok(true) => "Stop requested.".into(),
+                    Ok(false) => "The task has already finished.".into(),
+                    Err(error) => format!("Could not stop the task: {error}"),
+                };
+            }
+            Message::AttachMediaPressed => {
+                self.status_text =
+                    "Image and video inputs are not supported by this NextCore build.".into();
             }
             Message::ClearMediaPressed => {
                 self.pending_media.clear();
@@ -2332,6 +2844,7 @@ impl cosmic::Application for TokenWorkshedApp {
             Message::NewConversationPressed => {
                 let id = format!("conv-{}", now_millis());
                 self.native_state.active_conversation_id = id.clone();
+                self.chat_agent_status = None;
                 self.native_state.conversations.insert(
                     0,
                     StoredConversation {
@@ -2341,6 +2854,7 @@ impl cosmic::Application for TokenWorkshedApp {
                     },
                 );
                 self.save_state();
+                return self.chat_feed_scroll_to_bottom_task();
             }
             Message::DeleteConversationPressed(id) => {
                 self.native_state.conversations.retain(|item| item.id != id);
@@ -2362,6 +2876,7 @@ impl cosmic::Application for TokenWorkshedApp {
                         self.native_state.conversations[0].id.clone();
                 }
                 self.save_state();
+                return self.chat_feed_scroll_to_bottom_task();
             }
             Message::SelectConversationPressed(id) => {
                 if self
@@ -2371,7 +2886,421 @@ impl cosmic::Application for TokenWorkshedApp {
                     .any(|item| item.id == id)
                 {
                     self.native_state.active_conversation_id = id;
+                    self.chat_agent_status = None;
                     self.save_state();
+                    return self.chat_feed_scroll_to_bottom_task();
+                }
+            }
+            Message::ServerConnectionLoaded(result) => match result {
+                Ok(value) => {
+                    self.native_state.settings.local_server_mode_enabled =
+                        value_flag(value.get("local_server_enabled"));
+                    let previous_mode = string_at(&self.server_connection, "mode");
+                    let previous_connected = value_flag(self.server_connection.get("connected"));
+                    let previous_url = self.remote_server_url.clone();
+                    let mode = string_at(&value, "mode");
+                    let connected = value_flag(value.get("connected"));
+                    self.server_connection = value.clone();
+                    self.remote_server_url = if connected && mode == "remote" {
+                        string_at(&value, "server_url")
+                    } else {
+                        String::new()
+                    };
+                    let target_was_unset = self.native_state.runtime_target.is_none();
+                    if target_was_unset {
+                        self.native_state.runtime_target = Some(
+                            if matches!(mode.as_str(), "remote" | "remote-disconnected") {
+                                "remote".into()
+                            } else {
+                                "local".into()
+                            },
+                        );
+                    }
+                    let remote_active = self.runtime_is_remote();
+                    let profile = if remote_active {
+                        if matches!(mode.as_str(), "remote" | "remote-disconnected") {
+                            conversation_profile_for_connection(&value)
+                        } else {
+                            remote_profile_for_settings(&self.native_state.settings)
+                        }
+                    } else {
+                        "local".into()
+                    };
+                    let profile_changed = self.activate_conversation_profile(&profile);
+                    if profile_changed {
+                        self.agent_feedback.clear();
+                    }
+                    if remote_active && !connected {
+                        self.agent_dashboard = Value::Null;
+                        self.manager_models = ManagerModelsPayload::default();
+                        self.models.clear();
+                        self.runtime_remote_setup_open = true;
+                        self.server_settings_open = false;
+                        self.server_settings_section = None;
+                        self.status_text = if mode == "remote-disconnected" {
+                            "RoboServer is offline. Remote models and Agent data are paused; reconnect to continue.".into()
+                        } else {
+                            "RoboServer is selected but not connected. This Mac data remains separate.".into()
+                        };
+                    } else if remote_active && connected {
+                        self.runtime_remote_setup_open = false;
+                    }
+                    if !connected {
+                        self.agent_transfer_payload = None;
+                        self.agent_transfer_preview = Value::Null;
+                        self.agent_transfer_preview_direction.clear();
+                    }
+                    if target_was_unset || profile_changed {
+                        self.save_state();
+                    }
+                    let connection_changed = previous_mode != mode
+                        || previous_connected != connected
+                        || previous_url != self.remote_server_url;
+                    let mut tasks = Vec::new();
+                    if self.agent_profile_is_available(&value)
+                        && (profile_changed || self.agent_reindexed_profile != profile)
+                    {
+                        self.agent_reindexed_profile = profile;
+                        tasks.push(self.reindex_active_conversations_task());
+                    }
+                    if remote_active && connected && connection_changed {
+                        tasks.push(self.refresh_manager_task());
+                        tasks.push(self.refresh_status_task());
+                        tasks.push(self.refresh_runtime_task());
+                        tasks.push(self.refresh_agent_dashboard_task());
+                    } else if remote_active && !connected {
+                        self.status_payload = StatusPayload::default();
+                    }
+                    if !tasks.is_empty() {
+                        return cosmic::Task::batch(tasks);
+                    }
+                }
+                Err(error) => {
+                    self.status_text = format!("Server connection status unavailable: {error}")
+                }
+            },
+            Message::RemoteHostKeyInspected(result) => match result {
+                Ok(value) => {
+                    self.inspected_host_fingerprint = value
+                        .get("fingerprints")
+                        .and_then(Value::as_array)
+                        .and_then(|items| items.first())
+                        .map(|item| string_at(item, "fingerprint"))
+                        .unwrap_or_default();
+                    self.remote_host_key_changed = value_flag(value.get("changed_key"));
+                    self.status_text = if value_flag(value.get("changed_key")) {
+                        "The host key differs from the previously trusted key. Do not connect until you verify the server identity.".into()
+                    } else if self.inspected_host_fingerprint.is_empty() {
+                        "No usable SSH host key was returned.".into()
+                    } else {
+                        "SSH host key inspected. Review the SHA-256 fingerprint, then choose Connect to trust it.".into()
+                    };
+                }
+                Err(error) => {
+                    self.inspected_host_fingerprint.clear();
+                    self.remote_host_key_changed = false;
+                    self.status_text = format!("SSH host-key inspection failed: {error}");
+                }
+            },
+            Message::RemoteServerActionLoaded { action, result } => {
+                self.server_action_in_flight = false;
+                match result {
+                    Ok(value) => {
+                        if action == "connect" {
+                            self.agent_transfer_payload = None;
+                            self.agent_transfer_preview = Value::Null;
+                            self.agent_transfer_preview_direction.clear();
+                            self.remote_server_url = string_at(&value, "server_url");
+                            self.native_state.runtime_target = Some("remote".into());
+                            self.runtime_remote_setup_open = false;
+                            self.agent_feedback.clear();
+                            self.server_connection = value.clone();
+                            self.status_text =
+                                "Connected to RoboServer through a pinned SSH tunnel.".into();
+                        } else if action == "disconnect" {
+                            self.agent_transfer_payload = None;
+                            self.agent_transfer_preview = Value::Null;
+                            self.agent_transfer_preview_direction.clear();
+                            self.remote_server_url.clear();
+                            self.native_state.runtime_target = Some("local".into());
+                            self.runtime_remote_setup_open = false;
+                            self.agent_feedback.clear();
+                            self.server_connection = value.clone();
+                            self.status_text = "Disconnected from RoboServer. The remote service remains available.".into();
+                        } else if action == "local-server" {
+                            self.native_state.settings.local_server_mode_enabled =
+                                value_flag(value.get("enabled"));
+                            self.status_text = if self
+                                .native_state
+                                .settings
+                                .local_server_mode_enabled
+                            {
+                                "Local server mode enabled. NextCore can stay available after its window closes.".into()
+                            } else {
+                                "Local server mode disabled.".into()
+                            };
+                        }
+                        let profile_changed = if action == "local-server" {
+                            false
+                        } else if action == "connect" {
+                            self.activate_conversation_profile(
+                                &conversation_profile_for_connection(&value),
+                            )
+                        } else if action == "disconnect" {
+                            self.activate_conversation_profile("local")
+                        } else {
+                            false
+                        };
+                        self.save_state();
+                        let mut tasks = vec![
+                            self.refresh_server_connection_task(),
+                            self.refresh_manager_task(),
+                            self.refresh_status_task(),
+                            self.refresh_runtime_task(),
+                        ];
+                        if self.current_page == Page::Runtime {
+                            tasks.push(self.refresh_agent_dashboard_task());
+                        }
+                        let profile = if self.runtime_is_remote() {
+                            conversation_profile_for_connection(&self.server_connection)
+                        } else {
+                            "local".into()
+                        };
+                        if self.agent_profile_is_available(&self.server_connection)
+                            && (profile_changed || self.agent_reindexed_profile != profile)
+                        {
+                            self.agent_reindexed_profile = profile;
+                            tasks.push(self.reindex_active_conversations_task());
+                        }
+                        return cosmic::Task::batch(tasks);
+                    }
+                    Err(error) => {
+                        self.status_text = format!("Server action failed: {error}");
+                    }
+                }
+            }
+            Message::InspectRemoteServerPressed => {
+                if self.server_action_in_flight {
+                    return cosmic::Task::none();
+                }
+                let target = self.remote_server_target_payload();
+                self.status_text = "Inspecting SSH host key…".into();
+                return wrap_app_task(cosmic::Task::perform(
+                    self.api_client().inspect_remote_server(target),
+                    Message::RemoteHostKeyInspected,
+                ));
+            }
+            Message::ConnectRemoteServerPressed => {
+                if self.server_action_in_flight {
+                    return cosmic::Task::none();
+                }
+                if self.remote_host_key_changed {
+                    self.status_text = "The SSH host key changed. Do not connect until the server identity has been resolved.".into();
+                    return cosmic::Task::none();
+                }
+                if self.inspected_host_fingerprint.is_empty() {
+                    self.status_text = "Inspect the SSH host key before connecting.".into();
+                    return cosmic::Task::none();
+                }
+                let mut target = self.remote_server_target_payload();
+                if let Some(object) = target.as_object_mut() {
+                    object.insert(
+                        "fingerprint".into(),
+                        Value::String(self.inspected_host_fingerprint.clone()),
+                    );
+                }
+                self.server_action_in_flight = true;
+                self.status_text =
+                    "Installing or starting RoboServer, then opening the SSH tunnel…".into();
+                return wrap_app_task(cosmic::Task::perform(
+                    self.api_client().connect_remote_server(target),
+                    |result| Message::RemoteServerActionLoaded {
+                        action: "connect".into(),
+                        result,
+                    },
+                ));
+            }
+            Message::DisconnectRemoteServerPressed => {
+                if self.server_action_in_flight {
+                    return cosmic::Task::none();
+                }
+                self.server_action_in_flight = true;
+                self.status_text = "Closing the SSH tunnel…".into();
+                return wrap_app_task(cosmic::Task::perform(
+                    self.api_client().disconnect_remote_server(),
+                    |result| Message::RemoteServerActionLoaded {
+                        action: "disconnect".into(),
+                        result,
+                    },
+                ));
+            }
+            Message::ToggleLocalServerMode(enabled) => {
+                self.server_action_in_flight = true;
+                self.status_text = if enabled {
+                    "Enabling local server mode…".into()
+                } else {
+                    "Disabling local server mode…".into()
+                };
+                return wrap_app_task(cosmic::Task::perform(
+                    self.api_client().set_local_server_mode(enabled),
+                    |result| Message::RemoteServerActionLoaded {
+                        action: "local-server".into(),
+                        result,
+                    },
+                ));
+            }
+            Message::AgentTransferCategoryToggled { category, selected } => {
+                if self.agent_transfer_in_flight {
+                    return cosmic::Task::none();
+                }
+                if selected {
+                    self.agent_transfer_categories.insert(category);
+                } else {
+                    self.agent_transfer_categories.remove(&category);
+                }
+                self.agent_transfer_payload = None;
+                self.agent_transfer_preview = Value::Null;
+                self.agent_transfer_preview_direction.clear();
+                self.agent_transfer_message =
+                    "Selection changed. Preview again before importing.".into();
+            }
+            Message::AgentTransferPreviewPressed(direction) => {
+                if !value_flag(self.server_connection.get("connected")) {
+                    self.agent_transfer_message =
+                        "Connect to RoboServer before previewing a data transfer.".into();
+                    return cosmic::Task::none();
+                }
+                if self.agent_transfer_categories.is_empty() {
+                    self.agent_transfer_message =
+                        "Select at least one data category to preview.".into();
+                    return cosmic::Task::none();
+                }
+                self.agent_transfer_in_flight = true;
+                self.agent_transfer_payload = None;
+                self.agent_transfer_preview = Value::Null;
+                self.agent_transfer_preview_direction.clear();
+                self.agent_transfer_message = "Reading the selected source data…".into();
+                let client = self.api_client();
+                let categories = self.selected_agent_transfer_categories();
+                let export_local = direction == "local-to-remote";
+                let future = async move {
+                    if export_local {
+                        client.local_agent_data_export(categories).await
+                    } else {
+                        client.agent_data_export(categories).await
+                    }
+                };
+                return wrap_app_task(cosmic::Task::perform(future, move |result| {
+                    Message::AgentTransferSourceLoaded { direction, result }
+                }));
+            }
+            Message::AgentTransferSourceLoaded { direction, result } => match result {
+                Ok(transfer) => {
+                    self.agent_transfer_message =
+                        "Checking destination duplicates and conflicts…".into();
+                    let categories = self.selected_agent_transfer_categories();
+                    let client = self.api_client();
+                    let preview_transfer = transfer.clone();
+                    let preview_remote = direction == "local-to-remote";
+                    let future = async move {
+                        if preview_remote {
+                            client
+                                .agent_data_preview_import(preview_transfer.clone(), categories)
+                                .await
+                        } else {
+                            client
+                                .local_agent_data_preview_import(
+                                    preview_transfer.clone(),
+                                    categories,
+                                )
+                                .await
+                        }
+                    };
+                    return wrap_app_task(cosmic::Task::perform(future, move |result| {
+                        Message::AgentTransferPreviewLoaded {
+                            direction,
+                            transfer,
+                            result,
+                        }
+                    }));
+                }
+                Err(error) => {
+                    self.agent_transfer_in_flight = false;
+                    self.agent_transfer_message = format!("Could not read source data: {error}");
+                }
+            },
+            Message::AgentTransferPreviewLoaded {
+                direction,
+                transfer,
+                result,
+            } => {
+                self.agent_transfer_in_flight = false;
+                match result {
+                    Ok(preview) => {
+                        self.agent_transfer_payload = Some(transfer);
+                        self.agent_transfer_preview = preview;
+                        self.agent_transfer_preview_direction = direction;
+                        self.agent_transfer_message =
+                            "Review the counts below. Import only runs after you choose Import."
+                                .into();
+                    }
+                    Err(error) => {
+                        self.agent_transfer_payload = None;
+                        self.agent_transfer_preview = Value::Null;
+                        self.agent_transfer_preview_direction.clear();
+                        self.agent_transfer_message = format!("Import preview failed: {error}");
+                    }
+                }
+            }
+            Message::AgentTransferImportPressed => {
+                if !value_flag(self.server_connection.get("connected")) {
+                    self.agent_transfer_message =
+                        "Connect to RoboServer before importing Agent data.".into();
+                    return cosmic::Task::none();
+                }
+                let Some(transfer) = self.agent_transfer_payload.clone() else {
+                    self.agent_transfer_message =
+                        "Preview the destination before importing.".into();
+                    return cosmic::Task::none();
+                };
+                if self.agent_transfer_preview_direction.is_empty()
+                    || self.agent_transfer_categories.is_empty()
+                {
+                    self.agent_transfer_message =
+                        "Preview the selected categories before importing.".into();
+                    return cosmic::Task::none();
+                }
+                self.agent_transfer_in_flight = true;
+                self.agent_transfer_message = "Importing the reviewed data…".into();
+                let direction = self.agent_transfer_preview_direction.clone();
+                let categories = self.selected_agent_transfer_categories();
+                let client = self.api_client();
+                let import_remote = direction == "local-to-remote";
+                let future = async move {
+                    if import_remote {
+                        client.agent_data_import(transfer, categories).await
+                    } else {
+                        client.local_agent_data_import(transfer, categories).await
+                    }
+                };
+                return wrap_app_task(cosmic::Task::perform(
+                    future,
+                    Message::AgentTransferImportLoaded,
+                ));
+            }
+            Message::AgentTransferImportLoaded(result) => {
+                self.agent_transfer_in_flight = false;
+                match result {
+                    Ok(value) => {
+                        self.agent_transfer_message = transfer_import_result_text(&value);
+                        self.agent_transfer_payload = None;
+                        self.agent_transfer_preview = Value::Null;
+                        self.agent_transfer_preview_direction.clear();
+                        self.save_state();
+                    }
+                    Err(error) => {
+                        self.agent_transfer_message = format!("Agent data import failed: {error}");
+                    }
                 }
             }
             Message::SaveServerSettingsPressed => {
@@ -2387,6 +3316,11 @@ impl cosmic::Application for TokenWorkshedApp {
                 let defaults = NativeSettings::default();
                 self.native_state.settings.server_url = defaults.server_url;
                 self.native_state.settings.manager_token = defaults.manager_token;
+                self.native_state.settings.remote_server_host = defaults.remote_server_host;
+                self.native_state.settings.remote_server_username = defaults.remote_server_username;
+                self.native_state.settings.remote_server_port = defaults.remote_server_port;
+                self.native_state.settings.remote_server_identity_file =
+                    defaults.remote_server_identity_file;
                 self.native_state.settings.chat_dispatch_mode = defaults.chat_dispatch_mode;
                 self.selected_concurrent_models.clear();
                 self.save_state();
@@ -2437,11 +3371,11 @@ impl cosmic::Application for TokenWorkshedApp {
                     Message::CommunitySearchLoaded,
                 ));
             }
-            Message::DeployCommunityPressed(model) => {
-                self.community_job_message = format!("Starting download for {model}…");
+            Message::DownloadCommunityPressed(model) => {
+                self.community_job_message = format!("Downloading {model} from Hugging Face…");
                 return wrap_app_task(cosmic::Task::perform(
-                    self.api_client().community_deploy(model),
-                    Message::CommunityDeployLoaded,
+                    self.api_client().community_download_model(model),
+                    Message::CommunityDownloadLoaded,
                 ));
             }
             Message::CommunityJobActionPressed(action) => {
@@ -2458,50 +3392,6 @@ impl cosmic::Application for TokenWorkshedApp {
                     self.api_client().community_job_action(action),
                     Message::CommunityJobActionLoaded,
                 ));
-            }
-            Message::QuantizationPreflightPressed => {
-                self.status_text = "Running quantization preflight...".into();
-                return wrap_app_task(cosmic::Task::perform(
-                    self.api_client()
-                        .quantization_preflight(self.quantization_request()),
-                    Message::QuantizationPreflightLoaded,
-                ));
-            }
-            Message::QuantizationStartPressed => {
-                if !self.quantization_preflight_ok() {
-                    self.status_text = "Run a successful preflight before starting.".into();
-                } else {
-                    self.status_text = "Starting quantization...".into();
-                    return wrap_app_task(cosmic::Task::perform(
-                        self.api_client()
-                            .quantization_start(self.quantization_request()),
-                        Message::QuantizationStarted,
-                    ));
-                }
-            }
-            Message::QuantizationActionPressed(action) => {
-                if let Some(job) = &self.quantization_job {
-                    return wrap_app_task(cosmic::Task::perform(
-                        self.api_client()
-                            .quantization_action(job.id.clone(), action),
-                        Message::QuantizationActionLoaded,
-                    ));
-                }
-            }
-            Message::QuantizationDeliveryPressed(action) => {
-                self.status_text = "Applying delivery choice...".into();
-                if let Some(job) = &self.quantization_job {
-                    return wrap_app_task(cosmic::Task::perform(
-                        self.api_client()
-                            .quantization_delivery(job.id.clone(), action),
-                        Message::QuantizationDeliveryLoaded,
-                    ));
-                }
-            }
-            Message::QuantizationDeliveryDismissed => {
-                self.quantization_delivery_open = false;
-                self.status_text =
-                    "Delivery choice deferred; the artifact remains available.".into();
             }
             Message::ApproveIdePairingPressed(pairing_id) => {
                 return wrap_app_task(cosmic::Task::perform(
@@ -2541,7 +3431,7 @@ impl cosmic::Application for TokenWorkshedApp {
             Message::CopyJetBrainsProviderUrlPressed => {
                 let value = self.ide_connections.integration.provider_url.clone();
                 self.status_text = if copy_to_clipboard(&value) {
-                    "Token Workshed Provider URL copied.".into()
+                    "token-workshed NextCore Provider URL copied.".into()
                 } else {
                     "Could not access the macOS clipboard.".into()
                 };
@@ -2549,7 +3439,7 @@ impl cosmic::Application for TokenWorkshedApp {
             Message::CopyJetBrainsProviderKeyPressed => {
                 let value = self.ide_connections.integration.provider_api_key.clone();
                 self.status_text = if copy_to_clipboard(&value) {
-                    "Token Workshed Provider key copied.".into()
+                    "token-workshed NextCore Provider key copied.".into()
                 } else {
                     "Could not access the macOS clipboard.".into()
                 };
@@ -2561,9 +3451,19 @@ impl cosmic::Application for TokenWorkshedApp {
                     .collect::<Vec<_>>()
                     .join(" ");
                 self.status_text = if copy_to_clipboard(&value) {
-                    "Token Workshed MCP command copied.".into()
+                    "token-workshed NextCore MCP command copied.".into()
                 } else {
                     "Could not access the macOS clipboard.".into()
+                };
+            }
+            Message::OpenChatLink(url) => {
+                self.status_text = if is_safe_web_url(&url) {
+                    match Command::new("open").arg(&url).spawn() {
+                        Ok(_) => format!("Opening {url}…"),
+                        Err(_) => "Could not open this web link.".into(),
+                    }
+                } else {
+                    "This is not a valid HTTP or HTTPS link.".into()
                 };
             }
             Message::SelectLocalModelPressed(model) => {
@@ -2639,93 +3539,6 @@ impl cosmic::Application for TokenWorkshedApp {
                     Message::HfBindingSaved,
                 ));
             }
-            Message::ConfigureAgentProfilePressed => {
-                let model = self.current_profile_model();
-                if model.is_empty() {
-                    self.agent_profile_state = AgentProfileState::Failed {
-                        message: "Select a model before configuring AI agents.".into(),
-                    };
-                } else if !self.agent_profile_state.is_configuring() {
-                    self.native_state.settings.openclaw_enabled = false;
-                    self.native_state.settings.agent_runtime = "auto".into();
-                    self.agent_profile_state = AgentProfileState::Configuring {
-                        job_id: String::new(),
-                        progress: 0.0,
-                        phase: "metadata".into(),
-                    };
-                    self.save_state();
-                    let request_model = model.clone();
-                    return wrap_app_task(cosmic::Task::perform(
-                        self.api_client().configure_agent_profile(
-                            model,
-                            self.native_state.settings.server_url.clone(),
-                            false,
-                        ),
-                        move |result| Message::AgentProfileConfigureStarted {
-                            model: request_model,
-                            result,
-                        },
-                    ));
-                }
-            }
-            Message::RecalibrateAgentProfilePressed => {
-                let model = self.current_profile_model();
-                if model.is_empty() {
-                    self.status_text = "Select a model before recalibrating its profile.".into();
-                } else if !self.agent_profile_state.is_configuring() {
-                    self.native_state.settings.openclaw_enabled = false;
-                    self.native_state.settings.agent_runtime = "auto".into();
-                    self.agent_profile_state = AgentProfileState::Configuring {
-                        job_id: String::new(),
-                        progress: 0.0,
-                        phase: "metadata".into(),
-                    };
-                    self.save_state();
-                    let request_model = model.clone();
-                    return wrap_app_task(cosmic::Task::perform(
-                        self.api_client().configure_agent_profile(
-                            model,
-                            self.native_state.settings.server_url.clone(),
-                            true,
-                        ),
-                        move |result| Message::AgentProfileConfigureStarted {
-                            model: request_model,
-                            result,
-                        },
-                    ));
-                }
-            }
-            Message::DeleteAgentProfilePressed => {
-                let model = self.current_profile_model();
-                if model.is_empty() {
-                    self.status_text = "Select a model before deleting its profile.".into();
-                } else if self.agent_profile_state.is_configuring() {
-                    self.status_text =
-                        "Wait for the active Agent Profile configuration to finish or fail.".into();
-                } else {
-                    let request_model = model.clone();
-                    return wrap_app_task(cosmic::Task::perform(
-                        self.api_client().delete_agent_profile(model),
-                        move |result| Message::AgentProfileDeleted {
-                            model: request_model,
-                            result,
-                        },
-                    ));
-                }
-            }
-            Message::ToggleAgentRuntime(runtime) => {
-                if runtime != "off" && !self.agent_profile_state.is_configured() {
-                    self.status_text =
-                        "Configure AI agents for this model before enabling a runtime.".into();
-                } else if runtime == "off" || self.agent_mode() == runtime {
-                    self.native_state.settings.openclaw_enabled = false;
-                    self.native_state.settings.agent_runtime = "auto".into();
-                } else {
-                    self.native_state.settings.openclaw_enabled = true;
-                    self.native_state.settings.agent_runtime = runtime;
-                }
-                self.save_state();
-            }
             Message::DispatchModeChanged(value) => {
                 self.native_state.settings.chat_dispatch_mode = if value == "parallel" {
                     "parallel".into()
@@ -2743,8 +3556,14 @@ impl cosmic::Application for TokenWorkshedApp {
                 self.save_state();
             }
             Message::CloseRequested(id) => {
-                self.status_text = "Window minimized; backend remains running.".into();
-                return wrap_app_task(window::minimize::<Message>(id, true));
+                if self.native_state.settings.local_server_mode_enabled {
+                    self.status_text =
+                        "Window minimized; local server mode remains running.".into();
+                    return wrap_app_task(window::minimize::<Message>(id, true));
+                }
+                self.allow_close = true;
+                self.status_text = "Closing NextCore and stopping its local server…".into();
+                return wrap_app_task(window::close::<Message>(id));
             }
             Message::QuitPressed => {
                 self.allow_close = true;
@@ -2765,38 +3584,46 @@ impl cosmic::Application for TokenWorkshedApp {
             .as_ref()
             .and_then(|notice| notice.expires_at)
             .is_some();
-        if self.sidebar_bounce.is_some()
-            || notice_expires
-            || self.agent_profile_state.completion_active()
-        {
+        if self.sidebar_bounce.is_some() || notice_expires {
             subscriptions
                 .push(iced::time::every(Duration::from_millis(33)).map(Message::AnimationTick));
-        }
-        if self.agent_profile_state.is_configuring() {
-            subscriptions.push(
-                iced::time::every(Duration::from_millis(600)).map(Message::AgentProfilePollTick),
-            );
         }
         if self.current_page == Page::Logs {
             subscriptions.push(
                 iced::time::every(Duration::from_millis(500)).map(Message::DeveloperLogsTick),
             );
         }
-        if self.current_page == Page::Workshed
-            && self.workshed_run.as_ref().is_some_and(|run| {
-                !matches!(
-                    string_at(run, "status").as_str(),
-                    "completed" | "failed" | "cancelled" | "interrupted"
-                )
-            })
+        let workshed_long_press_pending = self.workshed_block_press.as_ref().is_some_and(|press| {
+            !press.dragging && press.started_at.elapsed() < WORKSHED_BLOCK_LONG_PRESS
+        });
+        if self.workshed_save_due.is_some()
+            || self.workshed_option_search_due.is_some()
+            || workshed_long_press_pending
         {
-            subscriptions.push(
-                iced::time::every(Duration::from_millis(700)).map(Message::QuantizationJobTick),
-            );
-        }
-        if self.workshed_save_due.is_some() || self.workshed_option_search_due.is_some() {
             subscriptions
                 .push(iced::time::every(Duration::from_millis(100)).map(Message::WorkshedSaveTick));
+        }
+        if self.current_page == Page::Workshed {
+            subscriptions.push(iced::event::listen_with(
+                |event, _status, _window| match event {
+                    iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                        Some(Message::WorkshedPointerMoved {
+                            x: position.x,
+                            y: position.y,
+                        })
+                    }
+                    iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
+                        iced::mouse::Button::Left,
+                    )) => Some(Message::WorkshedPointerPressed),
+                    iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+                        iced::mouse::Button::Left,
+                    )) => Some(Message::WorkshedPointerReleased),
+                    iced::Event::Mouse(iced::mouse::Event::CursorLeft) => {
+                        Some(Message::WorkshedPointerLeft)
+                    }
+                    _ => None,
+                },
+            ));
         }
         if self.current_page == Page::Workshed && !self.workshed_selected_block.is_empty() {
             subscriptions.push(iced::event::listen_with(|event, status, _window| {
@@ -2908,6 +3735,195 @@ impl TokenWorkshedApp {
             self.api_base.clone(),
             self.native_state.settings.manager_token.clone(),
         )
+        .with_agent_token(self.agent_token.clone())
+    }
+
+    fn runtime_is_remote(&self) -> bool {
+        self.native_state.runtime_target.as_deref() == Some("remote")
+    }
+
+    fn runtime_server_url(&self) -> String {
+        if self.runtime_is_remote() {
+            if value_flag(self.server_connection.get("connected")) {
+                self.remote_server_url.clone()
+            } else {
+                String::new()
+            }
+        } else {
+            self.native_state.settings.server_url.clone()
+        }
+    }
+
+    fn agent_form_command(&self) -> Result<Value, String> {
+        let Some(form) = self.agent_form.as_ref() else {
+            return Err("Open an Agent form before saving.".into());
+        };
+        let mut data = form.original.as_object().cloned().unwrap_or_default();
+        let field = |name: &str| {
+            form.fields
+                .get(name)
+                .map(String::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string()
+        };
+        for (name, value) in &form.fields {
+            if !matches!(name.as_str(), "secret_name" | "secret_value") {
+                data.insert(name.clone(), Value::String(value.clone()));
+            }
+        }
+
+        match form.kind {
+            AgentFormKind::Memory => {
+                data.insert("body".into(), Value::String(self.agent_form_body.text()));
+                let tags = field("tags")
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|tag| !tag.is_empty())
+                    .map(|tag| Value::String(tag.to_string()))
+                    .collect::<Vec<_>>();
+                data.insert("tags".into(), Value::Array(tags));
+            }
+            AgentFormKind::Skill => {
+                data.insert("body".into(), Value::String(self.agent_form_body.text()));
+                data.insert("enabled".into(), Value::Bool(form.enabled));
+            }
+            AgentFormKind::McpServer => {
+                if form.original.get("id").is_some()
+                    && field("name")
+                        != form
+                            .original
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                {
+                    return Err(
+                        "MCP connection names cannot be changed while editing because saved Keychain secrets are tied to the name.".into(),
+                    );
+                }
+                data.insert(
+                    "args".into(),
+                    Value::Array(
+                        self.agent_form_body
+                            .text()
+                            .lines()
+                            .map(str::trim)
+                            .filter(|line| !line.is_empty())
+                            .map(|line| Value::String(line.to_string()))
+                            .collect(),
+                    ),
+                );
+                let timeout = field("timeout")
+                    .parse::<f64>()
+                    .map_err(|_| "Timeout must be a number of seconds.".to_string())?;
+                data.insert("timeout".into(), json!(timeout));
+                data.insert("enabled".into(), Value::Bool(form.enabled));
+                let secret_name = field("secret_name");
+                let secret_value = form
+                    .fields
+                    .get("secret_value")
+                    .map(String::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if secret_name.is_empty() != secret_value.is_empty() {
+                    return Err(
+                        "Enter both the secret environment name and its value, or leave both blank."
+                            .into(),
+                    );
+                }
+                let mut secrets = serde_json::Map::new();
+                if !secret_name.is_empty() {
+                    secrets.insert(secret_name, Value::String(secret_value));
+                }
+                data.insert("secrets".into(), Value::Object(secrets));
+            }
+            AgentFormKind::ScheduledTask => {
+                data.insert("prompt".into(), Value::String(self.agent_form_body.text()));
+                let tools = field("tool_scope")
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|tool| !tool.is_empty())
+                    .map(|tool| Value::String(tool.to_string()))
+                    .collect::<Vec<_>>();
+                data.insert("tool_scope".into(), Value::Array(tools));
+                let mut authorization = data
+                    .get("authorization_scope")
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
+                authorization.insert(
+                    "computer_control".into(),
+                    Value::Bool(form.computer_control),
+                );
+                for key in ["allowed_paths", "allowed_domains", "browser_profile_ids"] {
+                    let values = field(key)
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(|value| Value::String(value.to_string()))
+                        .collect::<Vec<_>>();
+                    authorization.insert(key.into(), Value::Array(values));
+                }
+                data.insert("authorization_scope".into(), Value::Object(authorization));
+            }
+        }
+        Ok(json!({
+            "action": form.kind.action(),
+            "data": Value::Object(data),
+        }))
+    }
+
+    fn selected_agent_transfer_categories(&self) -> Vec<String> {
+        self.agent_transfer_categories.iter().cloned().collect()
+    }
+
+    fn agent_transfer_category_button(
+        &self,
+        key: &'static str,
+        label: &'static str,
+    ) -> Element<'_, Message> {
+        let selected = self.agent_transfer_categories.contains(key);
+        self.settings_select_button_fill(
+            format!("{} {label}", if selected { "✓" } else { "○" }),
+            Message::AgentTransferCategoryToggled {
+                category: key.to_string(),
+                selected: !selected,
+            },
+        )
+    }
+
+    fn remote_server_target_payload(&self) -> Value {
+        let port = self
+            .native_state
+            .settings
+            .remote_server_port
+            .trim()
+            .parse::<u16>()
+            .unwrap_or(22);
+        json!({
+            "host": self.native_state.settings.remote_server_host.trim(),
+            "username": self.native_state.settings.remote_server_username.trim(),
+            "port": port,
+            "identity_file": self.native_state.settings.remote_server_identity_file.trim(),
+            "app_path": "~/Applications/token-workshed-roboserver.app",
+        })
+    }
+
+    fn refresh_server_connection_task(&self) -> cosmic::app::Task<Message> {
+        wrap_app_task(cosmic::Task::perform(
+            self.api_client().server_connection(),
+            Message::ServerConnectionLoaded,
+        ))
+    }
+
+    fn chat_feed_scroll_to_bottom_task(&self) -> cosmic::app::Task<Message> {
+        // The chat scrollable uses the default top anchor, so relative offset
+        // 1 means the actual end. Pairing it with anchor_bottom reverses the
+        // offset and snaps to the top while the content is growing.
+        wrap_app_task(iced::widget::scrollable::snap_to(
+            widget::Id::new(CHAT_FEED_SCROLL_ID),
+            chat_feed_scroll_end_offset(),
+        ))
     }
 
     fn begin_model_switch(&mut self, model: &str) {
@@ -2915,15 +3931,9 @@ impl TokenWorkshedApp {
         self.pending_model_switch = Some(ModelSwitchSnapshot {
             selected_model: self.native_state.selected_model.clone(),
             selected_local_model: self.native_state.selected_local_model.clone(),
-            profile_state: self.agent_profile_state.clone(),
-            openclaw_enabled: self.native_state.settings.openclaw_enabled,
-            agent_runtime: self.native_state.settings.agent_runtime.clone(),
         });
         self.native_state.selected_local_model = model.to_string();
         self.native_state.selected_model = model.to_string();
-        self.native_state.settings.openclaw_enabled = false;
-        self.native_state.settings.agent_runtime = "auto".into();
-        self.agent_profile_state = AgentProfileState::Unconfigured;
         self.minimum_manager_response_generation =
             self.manager_refresh_generation.saturating_add(1);
         self.save_state();
@@ -2938,36 +3948,14 @@ impl TokenWorkshedApp {
         };
         self.native_state.selected_model = snapshot.selected_model;
         self.native_state.selected_local_model = snapshot.selected_local_model;
-        self.agent_profile_state = snapshot.profile_state;
-        self.native_state.settings.openclaw_enabled = snapshot.openclaw_enabled;
-        self.native_state.settings.agent_runtime = snapshot.agent_runtime;
         self.save_state();
     }
 
-    fn current_profile_model(&self) -> String {
+    fn current_model_id(&self) -> String {
         if !self.native_state.selected_model.trim().is_empty() {
             self.native_state.selected_model.trim().to_string()
         } else {
             self.native_state.selected_local_model.trim().to_string()
-        }
-    }
-
-    fn profile_status_label(&self) -> String {
-        match &self.agent_profile_state {
-            AgentProfileState::Unconfigured => "Not configured".into(),
-            AgentProfileState::Configuring {
-                phase, progress, ..
-            } => format!("Configuring {phase} ({progress:.0}%)"),
-            AgentProfileState::Configured { profile, .. } => {
-                if profile_has_degraded_tools(profile) {
-                    "Configured · limited tools".into()
-                } else {
-                    "Configured".into()
-                }
-            }
-            AgentProfileState::Failed { message } => {
-                format!("Failed: {}", message.chars().take(88).collect::<String>())
-            }
         }
     }
 
@@ -3026,6 +4014,11 @@ impl TokenWorkshedApp {
     }
 
     fn refresh_manager_task(&mut self) -> cosmic::app::Task<Message> {
+        if self.runtime_is_remote() && !value_flag(self.server_connection.get("connected")) {
+            self.manager_models = ManagerModelsPayload::default();
+            self.models.clear();
+            return cosmic::Task::none();
+        }
         if self.manager_refresh_in_flight {
             return cosmic::Task::none();
         }
@@ -3038,47 +4031,40 @@ impl TokenWorkshedApp {
         ))
     }
 
-    fn refresh_agent_profile_task(&mut self) -> cosmic::app::Task<Message> {
-        let model = self.current_profile_model();
-        if model.is_empty() || self.agent_profile_refresh_in_flight {
-            return cosmic::Task::none();
-        }
-        self.agent_profile_refresh_in_flight = true;
-        let request_model = model.clone();
-        wrap_app_task(cosmic::Task::perform(
-            self.api_client().agent_profile(model),
-            move |result| Message::AgentProfileLoaded {
-                model: request_model,
-                result,
-            },
-        ))
-    }
-
-    fn refresh_agent_profile_job_task(&mut self, job_id: String) -> cosmic::app::Task<Message> {
-        if self.agent_profile_refresh_in_flight {
-            return cosmic::Task::none();
-        }
-        self.agent_profile_refresh_in_flight = true;
-        let model = self.current_profile_model();
-        wrap_app_task(cosmic::Task::perform(
-            self.api_client().agent_profile_job(job_id),
-            move |result| Message::AgentProfileJobLoaded { model, result },
-        ))
-    }
-
     fn refresh_status_task(&mut self) -> cosmic::app::Task<Message> {
+        if self.runtime_is_remote() && !value_flag(self.server_connection.get("connected")) {
+            self.status_payload = StatusPayload::default();
+            return cosmic::Task::none();
+        }
         if self.status_refresh_in_flight {
             return cosmic::Task::none();
         }
         self.status_refresh_in_flight = true;
         wrap_app_task(cosmic::Task::perform(
-            self.api_client()
-                .status(self.native_state.settings.server_url.clone()),
+            self.api_client().status(self.runtime_server_url()),
             Message::StatusLoaded,
         ))
     }
 
+    fn refresh_agent_dashboard_task(&mut self) -> cosmic::app::Task<Message> {
+        if self.runtime_is_remote() && !value_flag(self.server_connection.get("connected")) {
+            self.agent_dashboard = Value::Null;
+            return cosmic::Task::none();
+        }
+        if self.agent_refresh_in_flight {
+            return cosmic::Task::none();
+        }
+        self.agent_refresh_in_flight = true;
+        wrap_app_task(cosmic::Task::perform(
+            self.api_client().agent_dashboard(),
+            Message::AgentDashboardLoaded,
+        ))
+    }
+
     fn refresh_runtime_task(&self) -> cosmic::app::Task<Message> {
+        if self.runtime_is_remote() && !value_flag(self.server_connection.get("connected")) {
+            return cosmic::Task::none();
+        }
         wrap_app_task(cosmic::Task::perform(
             self.api_client().runtime_config(),
             Message::RuntimeLoaded,
@@ -3104,36 +4090,6 @@ impl TokenWorkshedApp {
         wrap_app_task(cosmic::Task::perform(
             self.api_client().community_job(),
             Message::CommunityJobLoaded,
-        ))
-    }
-
-    fn refresh_quantization_capabilities_task(&mut self) -> cosmic::app::Task<Message> {
-        if self.quantization_capabilities_refresh_in_flight {
-            return cosmic::Task::none();
-        }
-        self.quantization_capabilities_refresh_in_flight = true;
-        wrap_app_task(cosmic::Task::perform(
-            self.api_client().quantization_capabilities(),
-            Message::QuantizationCapabilitiesLoaded,
-        ))
-    }
-
-    fn refresh_quantization_job_task(&mut self) -> cosmic::app::Task<Message> {
-        let Some(job_id) = self
-            .quantization_job
-            .as_ref()
-            .map(|job| job.id.clone())
-            .filter(|value| !value.trim().is_empty())
-        else {
-            return cosmic::Task::none();
-        };
-        if self.quantization_job_refresh_in_flight {
-            return cosmic::Task::none();
-        }
-        self.quantization_job_refresh_in_flight = true;
-        wrap_app_task(cosmic::Task::perform(
-            self.api_client().quantization_job(job_id),
-            Message::QuantizationJobLoaded,
         ))
     }
 
@@ -3311,6 +4267,17 @@ impl TokenWorkshedApp {
         );
     }
 
+    fn workshed_begin_block_drag(&mut self, source_id: String) {
+        self.workshed_drag_pointer_origin = self
+            .workshed_block_press
+            .as_ref()
+            .and_then(|press| press.pointer_origin)
+            .or(self.workshed_pointer_position);
+        self.workshed_drag_source = Some(source_id);
+        self.workshed_delete_drop_zone_active = false;
+        self.status_text = "Dragging block. Release in the red area to delete it.".into();
+    }
+
     fn workshed_invalidate_preflight(preflight: &mut Value, generation: &mut u64) {
         // An edit invalidates both a displayed plan and any still-in-flight
         // response. Otherwise a late response can approve the previous draft.
@@ -3331,6 +4298,12 @@ impl TokenWorkshedApp {
         self.workshed_option_search_due = None;
         self.workshed_run_after_preflight = false;
         self.workshed_selected_block.clear();
+        self.workshed_hovered_block = None;
+        self.workshed_pointer_position = None;
+        self.workshed_block_press = None;
+        self.workshed_drag_source = None;
+        self.workshed_drag_pointer_origin = None;
+        self.workshed_delete_drop_zone_active = false;
         self.workshed_focused_field = None;
         self.workshed_inspector_open = false;
         self.workshed_field_drafts.clear();
@@ -3849,52 +4822,6 @@ impl TokenWorkshedApp {
         self.workshed_set_param_value(block_id, field_key, value);
     }
 
-    fn quantization_request(&self) -> Value {
-        let worker_id = self
-            .quantization_capabilities
-            .engines
-            .iter()
-            .find(|item| item.get("id").and_then(Value::as_str) == Some("vllm_cuda"))
-            .and_then(|item| item.get("worker_id"))
-            .and_then(Value::as_str)
-            .or_else(|| {
-                self.quantization_capabilities
-                    .workers
-                    .first()
-                    .and_then(|item| item.get("id"))
-                    .and_then(Value::as_str)
-            })
-            .unwrap_or("");
-        let mut overrides = json!({});
-        if self.quantization_advanced_open {
-            overrides = json!({
-                "bits": self.quantization_bits.trim().parse::<u8>().unwrap_or(4),
-                "group_size": self.quantization_group_size.trim().parse::<u16>().unwrap_or(128),
-                "mode": self.quantization_mode.trim(),
-                "algorithm": self.quantization_algorithm.trim(),
-            });
-        }
-        json!({
-            "source": {
-                "kind": self.quantization_source_kind,
-                "ref": self.quantization_source.trim(),
-                "revision": self.quantization_revision.trim(),
-            },
-            "engine": self.quantization_engine,
-            "worker_id": worker_id,
-            "preset_id": self.quantization_preset,
-            "overrides": overrides,
-            "output_name": self.quantization_output.trim(),
-        })
-    }
-
-    fn quantization_preflight_ok(&self) -> bool {
-        self.quantization_preflight
-            .get("ok")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-    }
-
     fn refresh_ide_connections_task(&mut self) -> cosmic::app::Task<Message> {
         if self.ide_connections_refresh_in_flight {
             return cosmic::Task::none();
@@ -3918,13 +4845,27 @@ impl TokenWorkshedApp {
         // started. Keep that stale payload from rolling the picker back and
         // causing the real switch response to be rejected as stale.
         if self.pending_model_switch.is_none()
-            && !data.active_model.is_empty()
-            && self.native_state.selected_model != data.active_model
+            && (data
+                .model_details
+                .iter()
+                .find(|detail| detail.id == self.native_state.selected_model)
+                .is_none()
+                || (!data.active_model.is_empty()
+                    && data
+                        .model_details
+                        .iter()
+                        .any(|detail| detail.id == data.active_model)
+                    && self.native_state.selected_model != data.active_model))
         {
-            self.native_state.selected_model = data.active_model.clone();
-            self.native_state.settings.openclaw_enabled = false;
-            self.native_state.settings.agent_runtime = "auto".into();
-            self.agent_profile_state = AgentProfileState::Unconfigured;
+            self.native_state.selected_model = if data
+                .model_details
+                .iter()
+                .any(|detail| detail.id == data.active_model)
+            {
+                data.active_model.clone()
+            } else {
+                String::new()
+            };
             persistent_state_changed = true;
         }
         if !data.concurrent_models.is_empty() {
@@ -3947,12 +4888,98 @@ impl TokenWorkshedApp {
 
     fn save_state(&mut self) {
         normalize_settings(&mut self.native_state.settings);
+        let profile_id = if self
+            .native_state
+            .active_conversation_profile
+            .trim()
+            .is_empty()
+        {
+            "local"
+        } else {
+            self.native_state.active_conversation_profile.as_str()
+        };
+        self.native_state.conversation_profiles.insert(
+            profile_id.to_string(),
+            StoredConversationProfile {
+                active_conversation_id: self.native_state.active_conversation_id.clone(),
+                conversations: self.native_state.conversations.clone(),
+                selected_model: self.native_state.selected_model.clone(),
+                selected_local_model: self.native_state.selected_local_model.clone(),
+            },
+        );
         if let Err(error) = self.store.save(&self.native_state) {
             #[cfg(debug_assertions)]
             eprintln!("failed to save native UI state: {error}");
             #[cfg(not(debug_assertions))]
             let _ = error;
         }
+    }
+
+    fn activate_conversation_profile(&mut self, profile_id: &str) -> bool {
+        let profile_id = if profile_id.trim().is_empty() {
+            "local"
+        } else {
+            profile_id.trim()
+        };
+        if self.native_state.active_conversation_profile == profile_id {
+            return false;
+        }
+
+        self.save_state();
+        let profile = self
+            .native_state
+            .conversation_profiles
+            .get(profile_id)
+            .cloned()
+            .unwrap_or_default();
+        self.native_state.active_conversation_profile = profile_id.to_string();
+        self.native_state.active_conversation_id = if profile.active_conversation_id.is_empty() {
+            if profile_id == "local" {
+                "main".into()
+            } else {
+                format!("conv-{}", now_millis())
+            }
+        } else {
+            profile.active_conversation_id
+        };
+        self.native_state.conversations = if profile.conversations.is_empty() {
+            vec![StoredConversation {
+                id: self.native_state.active_conversation_id.clone(),
+                title: "New Conversation".into(),
+                messages: Vec::new(),
+            }]
+        } else {
+            profile.conversations
+        };
+        self.native_state.selected_model = profile.selected_model;
+        self.native_state.selected_local_model = profile.selected_local_model;
+        self.message_content = text_editor::Content::new();
+        self.pending_media.clear();
+        self.chat_agent_status = None;
+        self.save_state();
+        true
+    }
+
+    fn agent_profile_is_available(&self, connection: &Value) -> bool {
+        if self.runtime_is_remote() {
+            string_at(connection, "mode") == "remote" && value_flag(connection.get("connected"))
+        } else {
+            string_at(connection, "mode") == "local"
+        }
+    }
+
+    fn reindex_active_conversations_task(&self) -> cosmic::app::Task<Message> {
+        if self.ide_companion || self.agent_token.trim().is_empty() {
+            return cosmic::app::Task::none();
+        }
+        let Ok(value) = serde_json::to_value(&self.native_state.conversations) else {
+            return cosmic::app::Task::none();
+        };
+        let conversations = value.as_array().cloned().unwrap_or_default();
+        wrap_app_task(cosmic::Task::perform(
+            self.api_client().agent_reindex(conversations),
+            Message::AgentReindexFinished,
+        ))
     }
 
     fn apply_settings_inputs(&mut self) {
@@ -4021,8 +5048,27 @@ impl TokenWorkshedApp {
             role: role.into(),
             content: content.into(),
             api_content,
+            attachments: Vec::new(),
         });
         index
+    }
+
+    fn append_chat_attachment(
+        &mut self,
+        conversation_id: &str,
+        message_index: usize,
+        attachment: StoredAttachment,
+    ) {
+        if let Some(conversation) = self
+            .native_state
+            .conversations
+            .iter_mut()
+            .find(|item| item.id == conversation_id)
+        {
+            if let Some(message) = conversation.messages.get_mut(message_index) {
+                message.attachments.push(attachment);
+            }
+        }
     }
 
     fn set_chat_message_content(
@@ -4043,113 +5089,12 @@ impl TokenWorkshedApp {
         }
     }
 
-    fn insert_chat_message_at(
-        &mut self,
-        conversation_id: &str,
-        message_index: usize,
-        role: &str,
-        content: &str,
-        api_content: Option<Value>,
-    ) -> usize {
-        if let Some(conversation) = self
-            .native_state
-            .conversations
-            .iter_mut()
-            .find(|item| item.id == conversation_id)
-        {
-            let index = message_index.min(conversation.messages.len());
-            conversation.messages.insert(
-                index,
-                StoredMessage {
-                    role: role.into(),
-                    content: content.into(),
-                    api_content,
-                },
-            );
-            return index;
-        }
-        message_index
-    }
-
-    fn mark_thinking_started(&mut self, now: Instant) {
-        if let Some(stream) = &mut self.streaming_reply {
-            if stream.thinking_started_at.is_none() {
-                stream.thinking_started_at = Some(now);
-            }
-        }
-    }
-
-    fn mark_thinking_finished(&mut self, now: Instant) {
-        if let Some(stream) = &mut self.streaming_reply {
-            if stream.thinking_duration.is_none() {
-                if let Some(started_at) = stream.thinking_started_at {
-                    stream.thinking_duration = Some(now.saturating_duration_since(started_at));
-                }
-            }
-        }
-    }
-
-    fn collapse_stream_thinking(&mut self, now: Instant) {
-        let Some(stream) = self.streaming_reply.as_ref() else {
-            return;
-        };
-        let Some(message_index) = stream.thinking_message_index else {
-            return;
-        };
-        let conversation_id = stream.conversation_id.clone();
-        let duration = stream.thinking_duration.or_else(|| {
-            stream
-                .thinking_started_at
-                .map(|started_at| now.saturating_duration_since(started_at))
-        });
-        let Some(duration) = duration else {
-            return;
-        };
-        self.set_chat_message_content(
-            &conversation_id,
-            message_index,
-            format_thought_duration(duration),
-        );
-    }
-
-    fn append_stream_thinking(&mut self, text: &str) {
-        if text.is_empty() {
-            return;
-        }
-
-        let Some(stream) = self.streaming_reply.as_mut() else {
-            return;
-        };
-
-        stream.thinking_received.push_str(text);
-        let conversation_id = stream.conversation_id.clone();
-        let content = stream.thinking_received.clone();
-        let existing_index = stream.thinking_message_index;
-        let insert_index = existing_index.is_none().then_some(stream.message_index);
-
-        if let Some(index) = insert_index {
-            stream.thinking_message_index = Some(index);
-            stream.message_index += 1;
-            let inserted_index =
-                self.insert_chat_message_at(&conversation_id, index, "thinking", &content, None);
-            if inserted_index != index {
-                if let Some(stream) = self.streaming_reply.as_mut() {
-                    stream.thinking_message_index = Some(inserted_index);
-                    stream.message_index = inserted_index + 1;
-                }
-            }
-        } else if let Some(index) = existing_index {
-            self.set_chat_message_content(&conversation_id, index, content);
-        }
-    }
-
     fn advance_stream_reveal(&mut self, now: Instant) -> bool {
         let Some(stream) = self.streaming_reply.as_mut() else {
             return false;
         };
 
         let total_chars = stream.received.chars().count();
-        let was_done = stream.done;
         let mut should_save = false;
         let content = if total_chars == 0 && !stream.done {
             thinking_ellipsis(stream.started_at, now)
@@ -4178,10 +5123,7 @@ impl TokenWorkshedApp {
         }
 
         self.set_chat_message_content(&conversation_id, message_index, content);
-        if was_done {
-            self.collapse_stream_thinking(now);
-        }
-        if finished || (was_done && total_chars == 0) {
+        if finished {
             self.streaming_reply = None;
         }
         should_save
@@ -4191,6 +5133,11 @@ impl TokenWorkshedApp {
         if self.streaming_reply.is_some() {
             self.status_text =
                 "Wait for the current response to finish before sending again.".into();
+            return cosmic::Task::none();
+        }
+        if self.runtime_is_remote() && !value_flag(self.server_connection.get("connected")) {
+            self.status_text =
+                "RoboServer is offline. Reconnect before sending a remote request.".into();
             return cosmic::Task::none();
         }
         let text = self.message_content.text().trim().to_string();
@@ -4234,17 +5181,15 @@ impl TokenWorkshedApp {
         self.streaming_reply = Some(StreamingReplyState {
             request_id,
             request_model: request_model.clone(),
+            run_id: format!("{}-{request_id}", std::process::id()),
             conversation_id: stream_conversation_id,
             message_index: assistant_index,
-            thinking_message_index: None,
-            thinking_received: String::new(),
-            thinking_started_at: None,
-            thinking_duration: None,
             received: String::new(),
             visible_chars: 0,
             done: false,
             started_at: Instant::now(),
         });
+        self.chat_agent_status = None;
         self.advance_stream_reveal(Instant::now());
         self.message_content = text_editor::Content::new();
         self.pending_media.clear();
@@ -4253,6 +5198,7 @@ impl TokenWorkshedApp {
 
         let settings = self.native_state.settings.clone();
         let conversation_id = self.native_state.active_conversation_id.clone();
+        let run_id = format!("{}-{request_id}", std::process::id());
         let payload = ChatRequest {
             message: if text.is_empty() {
                 "Please analyze the attached media.".into()
@@ -4261,27 +5207,13 @@ impl TokenWorkshedApp {
             },
             user_content,
             history,
-            server_url: settings.server_url,
+            server_url: self.runtime_server_url(),
             max_tokens: settings.max_tokens,
             temperature: settings.temperature,
             system_prompt: settings.system_prompt,
             model: request_model,
-            openclaw_enabled: settings.openclaw_enabled,
-            cypherclaw_enabled: settings.openclaw_enabled,
-            agent_runtime: if settings.openclaw_enabled {
-                if settings.agent_runtime == "hermes" {
-                    "hermes".into()
-                } else {
-                    "openclaw".into()
-                }
-            } else {
-                "auto".into()
-            },
             conversation_id,
-            // Tool schemas are selected automatically by the backend from the
-            // configured profile and the user's intent. The model decides
-            // whether to emit a tool call, Ollama-style.
-            tool_mode: None,
+            run_id,
         };
 
         let client = self.api_client();
@@ -4292,17 +5224,10 @@ impl TokenWorkshedApp {
                 .checked_sub(Duration::from_millis(33))
                 .unwrap_or_else(Instant::now);
             let result = client.chat_stream(payload, |event| {
-                let is_delta = matches!(
-                    &event,
-                    ChatStreamEvent::ThinkingDelta(_) | ChatStreamEvent::AnswerDelta(_)
-                );
+                let is_delta = matches!(&event, ChatStreamEvent::AnswerDelta(_));
                 if is_delta {
                     match (&mut pending_delta, event) {
                         (
-                            Some(ChatStreamEvent::ThinkingDelta(buffer)),
-                            ChatStreamEvent::ThinkingDelta(delta),
-                        )
-                        | (
                             Some(ChatStreamEvent::AnswerDelta(buffer)),
                             ChatStreamEvent::AnswerDelta(delta),
                         ) => buffer.push_str(&delta),
@@ -4349,7 +5274,10 @@ impl TokenWorkshedApp {
                 });
             }
         });
-        wrap_app_task(cosmic::task::stream(receiver))
+        cosmic::Task::batch(vec![
+            self.chat_feed_scroll_to_bottom_task(),
+            wrap_app_task(cosmic::task::stream(receiver)),
+        ])
     }
 
     fn app_shell(&self) -> Element<'_, Message> {
@@ -4471,7 +5399,7 @@ impl TokenWorkshedApp {
             Page::Chat => self.chat_page(),
             Page::Models => self.models_page(),
             Page::Workshed => self.workshed_page(),
-            Page::Server => self.server_page(),
+            Page::Runtime => self.runtime_agent_page(),
             Page::Logs => self.logs_page(),
             Page::Community => self.community_page(),
             Page::Settings => self.settings_page(),
@@ -4490,7 +5418,7 @@ impl TokenWorkshedApp {
             Page::Chat,
             Page::Models,
             Page::Workshed,
-            Page::Server,
+            Page::Runtime,
             Page::Logs,
             Page::Community,
             Page::About,
@@ -4641,7 +5569,7 @@ impl TokenWorkshedApp {
             Page::Chat => 0.0,
             Page::Models => 1.0,
             Page::Workshed => 2.0,
-            Page::Server => 3.0,
+            Page::Runtime => 3.0,
             Page::Logs => 4.0,
             Page::Community => 5.0,
             Page::About => 6.0,
@@ -4705,7 +5633,7 @@ impl TokenWorkshedApp {
         let palette = self.active_palette();
         let no_model_banner = if self.native_state.selected_model.trim().is_empty() {
             widget::container(
-                self.label_text("To start using Token Workshed, please install a model."),
+                self.label_text("To start using token-workshed NextCore, please install a model."),
             )
             .height(Length::Fixed(36.0))
             .align_x(Alignment::Center)
@@ -4724,7 +5652,7 @@ impl TokenWorkshedApp {
         let feed_column = if messages.is_empty() {
             widget::column::with_capacity(1).push(
                 widget::container(self.soft_text(
-                    "Start a conversation with token-workshed.\nYou can tune settings in the Settings page.",
+                    "Start a conversation with token-workshed NextCore.\nYou can tune settings in the Settings page.",
                 ))
                     .width(Length::Fill)
                     .height(Length::Fill)
@@ -4732,14 +5660,25 @@ impl TokenWorkshedApp {
                     .align_y(Alignment::Center),
             )
         } else {
-            messages.iter().fold(
-                widget::column::with_capacity(messages.len()),
-                |column, msg| column.push(self.chat_bubble(&msg.role, &msg.content)),
-            )
+            let pending_index = self.streaming_reply.as_ref().and_then(|stream| {
+                (stream.conversation_id == self.native_state.active_conversation_id)
+                    .then_some(stream.message_index)
+            });
+            messages
+                .iter()
+                .enumerate()
+                .filter(|(_, msg)| msg.role != "thinking")
+                .fold(
+                    widget::column::with_capacity(messages.len()),
+                    |column, (index, msg)| {
+                        column.push(self.chat_bubble(msg, pending_index == Some(index)))
+                    },
+                )
         };
 
         let feed_area = widget::container(
             widget::scrollable(feed_column.spacing(8))
+                .id(widget::Id::new(CHAT_FEED_SCROLL_ID))
                 .height(Length::Fill)
                 .class(theme::iced::Scrollable::Transient),
         )
@@ -4778,7 +5717,7 @@ impl TokenWorkshedApp {
             });
 
         let composer_leading: Element<'_, Message> = if include_dashboard {
-            self.agent_runtime_or_configure_group()
+            self.soft_pill("NextCore Agent")
         } else {
             self.soft_pill("IDE context")
         };
@@ -4833,10 +5772,29 @@ impl TokenWorkshedApp {
             .padding([0, 8, 8, 8])
             .height(Length::Shrink);
         let palette = self.active_palette();
-        let chat_surface_content = widget::column::with_capacity(2)
-            .push(feed_area)
+        let mut chat_surface_content = widget::column::with_capacity(3).push(feed_area);
+        if let Some(status) = self
+            .chat_agent_status
+            .as_ref()
+            .filter(|status| status.conversation_id == self.native_state.active_conversation_id)
+        {
+            chat_surface_content = chat_surface_content.push(
+                widget::container(
+                    widget::row::with_capacity(2)
+                        .push(self.soft_text("NextCore Agent"))
+                        .push(self.soft_text_wrapped(&status.message))
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                )
+                .width(Length::Fill)
+                .padding([2, 12]),
+            );
+        }
+        let chat_surface_content = chat_surface_content
             .push(composer)
-            .spacing(0);
+            .spacing(0)
+            .height(Length::Fill)
+            .width(Length::Fill);
         let chat_surface = widget::container(self.glass_layer(
             chat_surface_content.into(),
             GlassVariant::Panel,
@@ -4940,7 +5898,7 @@ impl TokenWorkshedApp {
                 state,
             ),
         )
-        .height(Length::Fixed(38.0))
+        .height(Length::Fixed(CONTROL_HEIGHT))
         .align_y(Alignment::Center)
         .style(move |_| input_shell_style(palette, focused))
         .into()
@@ -4954,9 +5912,7 @@ impl TokenWorkshedApp {
         let categories = [
             ("models", "Models"),
             ("data", "Data"),
-            ("distill", "Distill"),
-            ("train", "Train"),
-            ("quantize", "Quantize"),
+            ("distill", "Generate"),
             ("test_compare", "Test & Compare"),
             ("control", "Control"),
             ("logic", "Logic"),
@@ -5054,7 +6010,7 @@ impl TokenWorkshedApp {
         let palette = self.active_palette();
         let focused = self.focused_input == Some(InputField::WorkshedSearch);
         widget::container(input)
-            .height(Length::Fixed(38.0))
+            .height(Length::Fixed(CONTROL_HEIGHT))
             .align_y(Alignment::Center)
             .style(move |_| input_shell_style(palette, focused))
             .into()
@@ -5066,21 +6022,10 @@ impl TokenWorkshedApp {
         label: &str,
         selected: bool,
     ) -> Element<'_, Message> {
-        let stripe_category = category.to_string();
-        let content = widget::row::with_capacity(2)
-            .push(
-                widget::container(widget::space())
-                    .width(Length::Fixed(WORKSHED_CATEGORY_STRIPE_WIDTH))
-                    .height(Length::Fixed(18.0))
-                    .style(move |_| workshed_category_stripe_style(&stripe_category, selected)),
-            )
-            .push(widget::text(label.to_string()).size(12))
-            .spacing(8)
-            .align_y(Alignment::Center);
-        iced::widget::button(content)
-            .padding([0, 8])
+        iced::widget::button(widget::text(label.to_string()).size(CONTROL_TEXT_SIZE))
+            .padding([0, 12])
             .width(Length::Fill)
-            .height(Length::Fixed(32.0))
+            .height(Length::Fixed(CONTROL_HEIGHT))
             .class(iced_button_class(workshed_category_button_style(selected)))
             .name(format!(
                 "{} category{}",
@@ -5303,19 +6248,10 @@ impl TokenWorkshedApp {
                 color: Some(Color::from_rgb8(0x11, 0x11, 0x11)),
             }));
         let close = iced::widget::button(close_icon)
-            .padding(6)
-            .width(Length::Fixed(28.0))
-            .height(Length::Fixed(28.0))
-            .class(iced_button_class(|_, status| {
-                let mut style = button::Style::default();
-                style.text_color = Color::from_rgb8(0x11, 0x11, 0x11);
-                style.border.radius = CONTENT_RADIUS.into();
-                if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-                    style.background =
-                        Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.04)));
-                }
-                style
-            }))
+            .padding(0)
+            .width(Length::Fixed(ICON_CONTROL_SIZE))
+            .height(Length::Fixed(ICON_CONTROL_SIZE))
+            .class(iced_button_class(media_fab_style()))
             .name("Close block settings")
             .on_press(Message::WorkshedPanelToggled("inspector".into()));
         widget::row::with_capacity(3)
@@ -5324,6 +6260,35 @@ impl TokenWorkshedApp {
             .push(close)
             .align_y(Alignment::Center)
             .width(Length::Fill)
+            .into()
+    }
+
+    fn workshed_retired_block_inspector(&self, block: &Value) -> Element<'_, Message> {
+        let type_id = string_at(block, "type_id");
+        let definition = workshed::definition_for(&self.workshed_capabilities, &type_id);
+        let summary = workshed::summary_parts(block, &definition, usize::MAX).join("\n");
+        let mut content = widget::column::with_capacity(3)
+            .push(self.workshed_inspector_heading("Legacy block · View only"))
+            .push(self.workshed_help_text(&format!(
+                "{} was removed from NextCore. Its saved parameters remain available for review, but this work order cannot pass preflight.",
+                definition.label
+            )))
+            .spacing(12)
+            .width(Length::Fill);
+        if !summary.is_empty() {
+            content = content.push(
+                widget::text(summary)
+                    .size(12)
+                    .class(workshed_color(""))
+                    .width(Length::Fill)
+                    .wrapping(text::Wrapping::WordOrGlyph),
+            );
+        }
+        widget::container(content)
+            .padding([0, 0, 0, 16])
+            .width(Length::Fixed(WORKSHED_PANEL_WIDTH))
+            .height(Length::Fill)
+            .style(|_| container::Style::default().color(workshed_color("")))
             .into()
     }
 
@@ -5352,6 +6317,9 @@ impl TokenWorkshedApp {
             .into();
         };
         let type_id = string_at(&selected, "type_id");
+        if workshed::is_retired_work_order_block(&type_id) {
+            return self.workshed_retired_block_inspector(&selected);
+        }
         let definition = workshed::definition_for(&self.workshed_capabilities, &type_id);
         let block_id = string_at(&selected, "id");
         let is_root = selected
@@ -5493,17 +6461,14 @@ impl TokenWorkshedApp {
                 .spacing(6)
                 .align_y(Alignment::Center),
         )
-        .padding([5, 0])
+        .padding([0, 10])
         .width(Length::Fill)
-        .class(iced_button_class(|_, status| {
-            let mut style = button::Style::default();
-            style.text_color = Color::from_rgb8(0x6b, 0x6b, 0x6b);
-            style.border.radius = CONTENT_RADIUS.into();
-            if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-                style.background = Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.025)));
-            }
-            style
-        }))
+        .height(Length::Fixed(CONTROL_HEIGHT))
+        .class(iced_button_class(secondary_button_style(
+            self.active_palette(),
+            self.accent(),
+            advanced_open,
+        )))
         .name(if advanced_open {
             "Collapse advanced block settings"
         } else {
@@ -5570,13 +6535,13 @@ impl TokenWorkshedApp {
                         .push(self.workshed_inline_action(
                             "↑",
                             Message::WorkshedBlockMovePressed(-1),
-                            30.0,
+                            36.0,
                             "Move block earlier",
                         ))
                         .push(self.workshed_inline_action(
                             "↓",
                             Message::WorkshedBlockMovePressed(1),
-                            30.0,
+                            36.0,
                             "Move block later",
                         ))
                         .push(self.workshed_inline_action(
@@ -5689,7 +6654,7 @@ impl TokenWorkshedApp {
                     block_id: block_id.clone(),
                     field: field.key.clone(),
                 },
-                54.0,
+                60.0,
                 format!("Reset {}", field.label),
             ));
         }
@@ -5700,7 +6665,7 @@ impl TokenWorkshedApp {
                     block_id: block_id.clone(),
                     field: field.key.clone(),
                 },
-                62.0,
+                if connected { 68.0 } else { 76.0 },
                 if connected {
                     format!("Disconnect {}", field.label)
                 } else {
@@ -5718,10 +6683,10 @@ impl TokenWorkshedApp {
         width: f32,
         accessibility_name: impl ToString,
     ) -> Element<'_, Message> {
-        iced::widget::button(centered_text(label.to_string(), 11))
-            .padding(0)
+        iced::widget::button(centered_text(label.to_string(), CONTROL_TEXT_SIZE))
+            .padding([0, 8])
             .width(Length::Fixed(width))
-            .height(Length::Fixed(26.0))
+            .height(Length::Fixed(CONTROL_HEIGHT))
             .class(iced_button_class(secondary_button_style(
                 self.active_palette(),
                 self.accent(),
@@ -5883,17 +6848,20 @@ impl TokenWorkshedApp {
                         value: choice.value.clone(),
                     };
                     row = row.push(
-                        iced::widget::button(centered_text(choice.label.clone(), 10))
-                            .padding([3, 5])
-                            .height(Length::Fixed(25.0))
-                            .width(Length::Fill)
-                            .class(iced_button_class(secondary_button_style(
-                                self.active_palette(),
-                                self.accent(),
-                                is_selected,
-                            )))
-                            .name(format!("Set {} to {}", field.label, choice.label))
-                            .on_press(message),
+                        iced::widget::button(centered_text(
+                            choice.label.clone(),
+                            CONTROL_TEXT_SIZE,
+                        ))
+                        .padding([0, 8])
+                        .height(Length::Fixed(CONTROL_HEIGHT))
+                        .width(Length::Fill)
+                        .class(iced_button_class(secondary_button_style(
+                            self.active_palette(),
+                            self.accent(),
+                            is_selected,
+                        )))
+                        .name(format!("Set {} to {}", field.label, choice.label))
+                        .on_press(message),
                     );
                 }
                 Some(widget::container(row).width(Length::Fill).into())
@@ -5912,10 +6880,10 @@ impl TokenWorkshedApp {
             }
             ParamKind::Integer | ParamKind::Number => {
                 let rendered = workshed::field_text(value, field);
-                let minus = iced::widget::button(centered_text("−".into(), 12))
+                let minus = iced::widget::button(centered_text("−".into(), CONTROL_TEXT_SIZE))
                     .padding(0)
-                    .width(Length::Fixed(28.0))
-                    .height(Length::Fixed(25.0))
+                    .width(Length::Fixed(ICON_CONTROL_SIZE))
+                    .height(Length::Fixed(ICON_CONTROL_SIZE))
                     .class(iced_button_class(secondary_button_style(
                         self.active_palette(),
                         self.accent(),
@@ -5927,10 +6895,10 @@ impl TokenWorkshedApp {
                         field: field.key.clone(),
                         direction: -1,
                     });
-                let plus = iced::widget::button(centered_text("+".into(), 12))
+                let plus = iced::widget::button(centered_text("+".into(), CONTROL_TEXT_SIZE))
                     .padding(0)
-                    .width(Length::Fixed(28.0))
-                    .height(Length::Fixed(25.0))
+                    .width(Length::Fixed(ICON_CONTROL_SIZE))
+                    .height(Length::Fixed(ICON_CONTROL_SIZE))
                     .class(iced_button_class(secondary_button_style(
                         self.active_palette(),
                         self.accent(),
@@ -5998,7 +6966,7 @@ impl TokenWorkshedApp {
                         block_id: block_id.clone(),
                         field: field.key.clone(),
                     },
-                    52.0,
+                    60.0,
                     format!("Reset {}", field.label),
                 ));
             }
@@ -6009,7 +6977,7 @@ impl TokenWorkshedApp {
                         block_id: block_id.clone(),
                         field: field.key.clone(),
                     },
-                    if connected { 68.0 } else { 62.0 },
+                    if connected { 82.0 } else { 76.0 },
                     if connected {
                         format!("Use literal value for {}", field.label)
                     } else {
@@ -6336,8 +7304,8 @@ impl TokenWorkshedApp {
         })
         .width(Length::Fill);
         let search_field = widget::container(search)
-            .padding([0, 8])
-            .height(Length::Fixed(36.0))
+            .padding([0, 10])
+            .height(Length::Fixed(CONTROL_HEIGHT))
             .width(Length::Fill)
             .align_y(Alignment::Center)
             .style(|_| workshed_field_style());
@@ -6426,11 +7394,7 @@ impl TokenWorkshedApp {
                     .push(
                         widget::text(label.clone())
                             .size(12)
-                            .class(if selected {
-                                Color::WHITE
-                            } else {
-                                workshed_color("")
-                            })
+                            .class(workshed_color(""))
                             .width(Length::Fill)
                             .wrapping(text::Wrapping::WordOrGlyph),
                     )
@@ -6439,11 +7403,7 @@ impl TokenWorkshedApp {
                     row = row.push(
                         widget::text(detail)
                             .size(10)
-                            .class(if selected {
-                                Color::from_rgb8(0xd0, 0xd0, 0xd0)
-                            } else {
-                                workshed_help_color()
-                            })
+                            .class(workshed_help_color())
                             .width(Length::Fill)
                             .wrapping(text::Wrapping::WordOrGlyph),
                     );
@@ -6492,17 +7452,14 @@ impl TokenWorkshedApp {
                 .push(widget::space().width(Length::Fill))
                 .align_y(Alignment::Center),
         )
-        .padding([5, 2])
+        .padding([0, 10])
         .width(Length::Fill)
-        .class(iced_button_class(|_, status| {
-            let mut style = button::Style::default();
-            style.text_color = Color::from_rgb8(0x6b, 0x6b, 0x6b);
-            style.border.radius = CONTENT_RADIUS.into();
-            if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-                style.background = Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.025)));
-            }
-            style
-        }))
+        .height(Length::Fixed(CONTROL_HEIGHT))
+        .class(iced_button_class(secondary_button_style(
+            self.active_palette(),
+            self.accent(),
+            results_open,
+        )))
         .name(if results_open {
             "Collapse model list"
         } else {
@@ -6724,7 +7681,7 @@ impl TokenWorkshedApp {
         let focused = self.workshed_focused_field.as_deref() == Some(key.as_str());
         let palette = self.active_palette();
         widget::container(input)
-            .height(Length::Fixed(38.0))
+            .height(Length::Fixed(CONTROL_HEIGHT))
             .align_y(Alignment::Center)
             .style(move |_| input_shell_style(palette, focused))
             .into()
@@ -6781,25 +7738,21 @@ impl TokenWorkshedApp {
                     "inherited" => "Inherit",
                     other => other,
                 };
-                let text = if current_mode == normalized {
-                    format!("> {label}")
-                } else {
-                    label.to_string()
-                };
-                let button = iced::widget::button(centered_text(text, 12))
-                    .padding(0)
-                    .width(Length::Fill)
-                    .height(Length::Fixed(28.0))
-                    .class(iced_button_class(secondary_button_style(
-                        self.active_palette(),
-                        self.accent(),
-                        current_mode == normalized,
-                    )))
-                    .on_press(Message::WorkshedInputModeChanged {
-                        block_id: block_id.clone(),
-                        port: port.name.clone(),
-                        mode: normalized.to_string(),
-                    });
+                let button =
+                    iced::widget::button(centered_text(label.to_string(), CONTROL_TEXT_SIZE))
+                        .padding([0, 10])
+                        .width(Length::Fill)
+                        .height(Length::Fixed(CONTROL_HEIGHT))
+                        .class(iced_button_class(secondary_button_style(
+                            self.active_palette(),
+                            self.accent(),
+                            current_mode == normalized,
+                        )))
+                        .on_press(Message::WorkshedInputModeChanged {
+                            block_id: block_id.clone(),
+                            port: port.name.clone(),
+                            mode: normalized.to_string(),
+                        });
                 modes = modes.push(button);
             }
             column = column.push(modes);
@@ -6933,7 +7886,7 @@ impl TokenWorkshedApp {
                             })
                             .width(Length::Fill),
                     )
-                    .height(Length::Fixed(38.0))
+                    .height(Length::Fixed(CONTROL_HEIGHT))
                     .style({
                         let palette = self.active_palette();
                         let focused = self.workshed_focused_field.as_deref() == Some(key.as_str());
@@ -7075,8 +8028,8 @@ impl TokenWorkshedApp {
                     .push(if self.workshed_preflight_ok() {
                         self.primary_button("Prepare & Run", Message::WorkshedRunPressed)
                     } else {
-                        widget::container(centered_text("Prepare & Run".into(), 14))
-                            .height(Length::Fixed(38.0))
+                        widget::container(centered_text("Prepare & Run".into(), CONTROL_TEXT_SIZE))
+                            .height(Length::Fixed(CONTROL_HEIGHT))
                             .width(Length::Fill)
                             .style(|_| disabled_action_style())
                             .into()
@@ -7088,549 +8041,6 @@ impl TokenWorkshedApp {
             .padding(10)
             .width(Length::Fill)
             .style(|_| workshed_panel_style())
-            .into()
-    }
-
-    fn legacy_quantize_page(&self) -> Element<'_, Message> {
-        let selected_engine = self.quantization_capabilities.engines.iter().find(|item| {
-            item.get("id").and_then(Value::as_str) == Some(self.quantization_engine.as_str())
-        });
-        let presets = selected_engine
-            .and_then(|item| item.get("presets"))
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let worker = self.quantization_capabilities.workers.first();
-        let remote_ready = worker
-            .and_then(|item| item.get("status"))
-            .and_then(Value::as_str)
-            .is_some_and(|status| matches!(status, "ready" | "configured"));
-        let source_local = self.quantization_source_kind == "local_path";
-        let worker_summary = selected_engine
-            .and_then(|engine| engine.get("worker"))
-            .map(|details| {
-                let name = string_at(details, "name");
-                let gpu = string_at(details, "gpu");
-                let memory = string_at(details, "memory");
-                let status = worker
-                    .map(|item| string_at(item, "status"))
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or_else(|| "unknown".into());
-                format!("{name} · {gpu} · {memory} · {status}")
-            })
-            .unwrap_or_else(|| "No HTTPS Worker configured".into());
-
-        let source_card = self.section_card(
-            "1 · Source",
-            "Choose a Hub model or a local folder containing compatible weights.",
-            widget::column::with_capacity(5)
-                .push(
-                    widget::row::with_capacity(2)
-                        .push(self.small_toggle(
-                            "Hugging Face",
-                            !source_local,
-                            Message::QuantizationSourceKindChanged("huggingface".into()),
-                        ))
-                        .push(if self.quantization_engine == "vllm_cuda" {
-                            self.disabled_toggle("Local folder · Hub only")
-                        } else {
-                            self.small_toggle(
-                                "Local folder",
-                                source_local,
-                                Message::QuantizationSourceKindChanged("local_path".into()),
-                            )
-                        })
-                        .spacing(8),
-                )
-                .push(self.labeled_app_text_input(
-                    "Model ID or local path",
-                    if source_local {
-                        "/Users/name/Models/MyModel"
-                    } else {
-                        "org/model-name"
-                    },
-                    &self.quantization_source,
-                    Some(Message::QuantizationSourceChanged),
-                    InputField::QuantizationSource,
-                    false,
-                ))
-                .push(self.soft_text(if self.quantization_engine == "vllm_cuda" {
-                    "CUDA Worker accepts Hub sources only; local folders are disabled for this engine."
-                } else {
-                    "The source is read-only. MLX writes only to its private quantization workspace."
-                }))
-                .spacing(8)
-                .into(),
-        );
-
-        let engine_card = self.section_card(
-            "2 · Executor",
-            "Capabilities are supplied by the local manager and configured Worker.",
-            widget::column::with_capacity(5)
-                .push(
-                    widget::row::with_capacity(2)
-                        .push(self.small_toggle(
-                            "MLX · This Mac",
-                            self.quantization_engine == "mlx_local",
-                            Message::QuantizationEngineChanged("mlx_local".into()),
-                        ))
-                        .push(self.small_toggle(
-                            "vLLM/CUDA · Worker",
-                            self.quantization_engine == "vllm_cuda",
-                            Message::QuantizationEngineChanged("vllm_cuda".into()),
-                        ))
-                        .spacing(8),
-                )
-                .push(if self.quantization_engine == "vllm_cuda" {
-                    self.dashboard_row("Worker", worker_summary)
-                } else {
-                    self.dashboard_row("Runtime", "MLX-LM · Apple Silicon")
-                })
-                .spacing(8)
-                .into(),
-        );
-
-        let preset_buttons = if presets.is_empty() {
-            self.soft_text("Waiting for executor capabilities...")
-        } else {
-            presets
-                .iter()
-                .fold(widget::row::with_capacity(presets.len()), |row, preset| {
-                    let id = string_at(preset, "id");
-                    let label = string_at(preset, "label");
-                    row.push(self.small_toggle(
-                        if label.is_empty() { id.clone() } else { label },
-                        self.quantization_preset == id,
-                        Message::QuantizationPresetChanged(id),
-                    ))
-                })
-                .spacing(8)
-                .into()
-        };
-        let advanced: Element<'_, Message> = if self.quantization_advanced_open {
-            widget::column::with_capacity(4)
-                .push(
-                    widget::row::with_capacity(3)
-                        .push(self.labeled_app_text_input(
-                            "Bits",
-                            "bits (4/8)",
-                            &self.quantization_bits,
-                            Some(Message::QuantizationBitsChanged),
-                            InputField::QuantizationBits,
-                            false,
-                        ))
-                        .push(self.labeled_app_text_input(
-                            "Group size",
-                            "group size",
-                            &self.quantization_group_size,
-                            Some(Message::QuantizationGroupSizeChanged),
-                            InputField::QuantizationGroupSize,
-                            false,
-                        ))
-                        .push(self.labeled_app_text_input(
-                            "Mode",
-                            "mode",
-                            &self.quantization_mode,
-                            Some(Message::QuantizationModeChanged),
-                            InputField::QuantizationMode,
-                            false,
-                        ))
-                        .spacing(8),
-                )
-                .push(self.labeled_app_text_input(
-                    "Revision (optional)",
-                    "revision (optional)",
-                    &self.quantization_revision,
-                    Some(Message::QuantizationRevisionChanged),
-                    InputField::QuantizationRevision,
-                    false,
-                ))
-                .push(self.labeled_app_text_input(
-                    "Algorithm (Worker)",
-                    "algorithm (Worker)",
-                    &self.quantization_algorithm,
-                    Some(Message::QuantizationAlgorithmChanged),
-                    InputField::QuantizationAlgorithm,
-                    false,
-                ))
-                .push(
-                    self.soft_text("Only values advertised by the selected executor are accepted."),
-                )
-                .spacing(8)
-                .into()
-        } else {
-            widget::column::with_capacity(1).into()
-        };
-        let preset_card = self.section_card(
-            "3 · Preset",
-            "Start with a guided profile. Advanced overrides stay collapsed until needed.",
-            widget::column::with_capacity(5)
-                .push(preset_buttons)
-                .push(self.secondary_button(
-                    if self.quantization_advanced_open {
-                        "Hide advanced parameters"
-                    } else {
-                        "Show advanced parameters"
-                    },
-                    Message::QuantizationAdvancedToggled,
-                ))
-                .push(advanced)
-                .spacing(8)
-                .into(),
-        );
-
-        let output_card =
-            self.section_card(
-                "4 · Output",
-                "Give the managed artifact a stable name before preflight.",
-                widget::column::with_capacity(3)
-                    .push(self.labeled_app_text_input(
-                        "Output name",
-                        "my-model-mlx-4bit",
-                        &self.quantization_output,
-                        Some(Message::QuantizationOutputChanged),
-                        InputField::QuantizationOutput,
-                        false,
-                    ))
-                    .push(self.soft_text(
-                        "Output names use letters, numbers, dots, dashes, and underscores.",
-                    ))
-                    .spacing(8)
-                    .into(),
-            );
-
-        let preflight = &self.quantization_preflight;
-        let errors = preflight
-            .get("errors")
-            .and_then(Value::as_array)
-            .map(|items| items.iter().filter_map(Value::as_str).collect::<Vec<_>>())
-            .unwrap_or_default();
-        let warnings = preflight
-            .get("warnings")
-            .and_then(Value::as_array)
-            .map(|items| items.iter().filter_map(Value::as_str).collect::<Vec<_>>())
-            .unwrap_or_default();
-        let estimate = preflight.get("estimate").unwrap_or(&Value::Null);
-        let preflight_summary = if self.quantization_preflight.is_null() {
-            self.soft_text("Run preflight to check compatibility, space, and output conflicts.")
-        } else if self.quantization_preflight_ok() {
-            self.soft_text("Ready to start. The selected executor accepted this request.")
-        } else {
-            self.soft_text("Preflight needs attention before the job can start.")
-        };
-        let mut preflight_body = widget::column::with_capacity(8)
-            .push(preflight_summary)
-            .push(self.dashboard_row(
-                "Engine",
-                if self.quantization_engine == "vllm_cuda" {
-                    "vLLM/CUDA Worker"
-                } else {
-                    "MLX · This Mac"
-                },
-            ))
-            .push(
-                self.dashboard_row(
-                    "Compression",
-                    estimate
-                        .get("compression_ratio")
-                        .map(|value| format!("{}×", value))
-                        .unwrap_or_else(|| "-".into()),
-                ),
-            );
-        preflight_body = preflight_body
-            .push(
-                self.dashboard_row(
-                    "Disk estimate",
-                    estimate
-                        .get("estimated_output_bytes")
-                        .and_then(Value::as_u64)
-                        .map(format_bytes)
-                        .unwrap_or_else(|| "-".into()),
-                ),
-            )
-            .push(
-                self.dashboard_row(
-                    "Free space",
-                    estimate
-                        .get("free_bytes")
-                        .and_then(Value::as_u64)
-                        .map(format_bytes)
-                        .unwrap_or_else(|| "-".into()),
-                ),
-            );
-        for error in errors.iter().take(3) {
-            preflight_body = preflight_body.push(self.soft_text(format!("Error · {error}")));
-        }
-        for warning in warnings.iter().take(3) {
-            preflight_body = preflight_body.push(self.soft_text(format!("Note · {warning}")));
-        }
-        preflight_body = preflight_body
-            .push(self.secondary_button("Run preflight", Message::QuantizationPreflightPressed))
-            .push(if self.quantization_preflight_ok() {
-                self.primary_button("Start quantization", Message::QuantizationStartPressed)
-            } else {
-                widget::container(centered_text("Start quantization".into(), 14))
-                    .height(Length::Fixed(38.0))
-                    .width(Length::Fill)
-                    .style(|_| disabled_action_style())
-                    .into()
-            })
-            .spacing(8);
-        let preflight_card = self.section_card(
-            "Preflight",
-            "The start action is intentionally gated on this check.",
-            preflight_body.into(),
-        );
-
-        let job_card = if let Some(job) = &self.quantization_job {
-            let percent = (job.progress.clamp(0.0, 1.0) * 100.0).round();
-            let speed = if job.speed.trim().is_empty() {
-                "—".to_string()
-            } else {
-                job.speed.clone()
-            };
-            let eta = match job.eta_seconds {
-                Some(seconds) if seconds >= 60 => {
-                    format!("{}m {:02}s", seconds / 60, seconds % 60)
-                }
-                Some(seconds) => format!("{seconds}s"),
-                None => "—".to_string(),
-            };
-            let mut body = widget::column::with_capacity(8)
-                .push(self.dashboard_row("Stage", &job.stage))
-                .push(self.dashboard_row("Progress", format!("{percent:.0}%")))
-                .push(self.dashboard_row("Speed", speed))
-                .push(self.dashboard_row("ETA", eta))
-                .push(self.dashboard_row("Status", &job.status))
-                .push(self.soft_text(&job.message));
-            if let Some(last_log) = job
-                .raw
-                .get("logs")
-                .and_then(Value::as_array)
-                .and_then(|items| items.last())
-                .and_then(Value::as_str)
-            {
-                body = body.push(self.soft_text(format!("Log · {last_log}")));
-            }
-            if !job.error.trim().is_empty() {
-                body = body.push(self.soft_text(format!("Error · {}", job.error)));
-            }
-            if let Some(command) = job
-                .raw
-                .get("deployment")
-                .and_then(|value| value.get("command"))
-                .and_then(Value::as_str)
-            {
-                body = body.push(self.soft_text(format!("Deploy · {command}")));
-            }
-            if matches!(
-                job.status.as_str(),
-                "queued" | "running" | "pausing" | "cancelling" | "paused"
-            ) {
-                let mut actions = widget::row::with_capacity(3)
-                    .push(self.danger_button(
-                        "Cancel",
-                        Message::QuantizationActionPressed("cancel".into()),
-                    ))
-                    .spacing(8);
-                if job.allowed_actions.iter().any(|action| action == "pause")
-                    && job.status == "running"
-                {
-                    actions = actions.push(self.secondary_button(
-                        "Pause",
-                        Message::QuantizationActionPressed("pause".into()),
-                    ));
-                } else if job.allowed_actions.iter().any(|action| action == "pause")
-                    && job.status == "paused"
-                {
-                    actions = actions.push(self.secondary_button(
-                        "Resume",
-                        Message::QuantizationActionPressed("resume".into()),
-                    ));
-                }
-                body = body.push(actions);
-            }
-            if matches!(job.status.as_str(), "awaiting_delivery" | "completed") {
-                let options = if job.engine == "vllm_cuda" {
-                    vec![
-                        ("Retain on Worker", "retain"),
-                        ("Download to Mac", "download"),
-                    ]
-                } else {
-                    vec![
-                        ("Register in Model Settings", "register"),
-                        ("Reveal in Finder", "reveal"),
-                    ]
-                };
-                body = body.push(
-                    widget::row::with_capacity(options.len())
-                        .push(self.secondary_button(
-                            options[0].0,
-                            Message::QuantizationDeliveryPressed(options[0].1.into()),
-                        ))
-                        .push(self.primary_button(
-                            options[1].0,
-                            Message::QuantizationDeliveryPressed(options[1].1.into()),
-                        ))
-                        .spacing(8),
-                );
-            }
-            self.section_card(
-                "5 · Live job",
-                "The manager persists this record so it can be recovered after restart.",
-                body.into(),
-            )
-        } else {
-            self.section_card(
-                "5 · Live job",
-                "No quantization job is running.",
-                self.soft_text("After start, this strip shows stage, progress, speed, ETA, and delivery actions."),
-            )
-        };
-
-        let setup = widget::scrollable(
-            widget::column::with_capacity(5)
-                .push(source_card)
-                .push(engine_card)
-                .push(preset_card)
-                .push(output_card)
-                .spacing(12),
-        )
-        .height(Length::Fill)
-        .class(theme::iced::Scrollable::Transient);
-        // Keep the live job strip outside the setup scroller so it remains
-        // visible at the bottom while source/preset details move underneath.
-        let left = widget::column::with_capacity(2)
-            .push(setup)
-            .push(job_card)
-            .spacing(12)
-            .height(Length::Fill);
-        let right = widget::column::with_capacity(3)
-            .push(preflight_card)
-            .push(
-                self.section_card(
-                    "Compatibility",
-                    "The selected executor reports the available algorithms and hardware.",
-                    widget::column::with_capacity(4)
-                        .push(self.dashboard_row(
-                            "Source",
-                            if source_local {
-                                "Local folder"
-                            } else {
-                                "Hugging Face Hub"
-                            },
-                        ))
-                        .push(self.dashboard_row(
-                            "Worker",
-                            if remote_ready {
-                                "Connected"
-                            } else {
-                                "Not configured"
-                            },
-                        ))
-                        .push(self.dashboard_row("Preset", &self.quantization_preset))
-                        .push(self.soft_text(
-                            if self.quantization_engine == "vllm_cuda" && !source_local {
-                                "Remote jobs never receive the Mac's Hugging Face token."
-                            } else {
-                                "Credentials stay within their owning runtime."
-                            },
-                        ))
-                        .spacing(8)
-                        .into(),
-                ),
-            )
-            .spacing(12)
-            .width(Length::Fixed(320.0));
-        let content = widget::row::with_capacity(2)
-            .push(
-                widget::container(left)
-                    .width(Length::Fill)
-                    .height(Length::Fill),
-            )
-            .push(right)
-            .spacing(12)
-            .height(Length::Fill);
-        let page = self.page_shell(
-            "Quantize",
-            "A guided workbench for MLX on this Mac or vLLM/CUDA on a trusted Worker.",
-            content.into(),
-        );
-        if self.quantization_delivery_open {
-            iced::widget::stack(vec![page, self.quantization_delivery_dialog()])
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
-        } else {
-            page
-        }
-    }
-
-    fn quantization_delivery_dialog(&self) -> Element<'_, Message> {
-        let Some(job) = &self.quantization_job else {
-            return widget::container(text("No quantization artifact is waiting for delivery."))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into();
-        };
-        let palette = self.active_palette();
-        let is_cuda = job.engine == "vllm_cuda";
-        let output_name = job
-            .raw
-            .get("output_name")
-            .and_then(Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or("quantized-model");
-        let (first_label, first_action, second_label, second_action) = if is_cuda {
-            ("Retain on Worker", "retain", "Download to Mac", "download")
-        } else {
-            (
-                "Register in Model Settings",
-                "register",
-                "Reveal in Finder",
-                "reveal",
-            )
-        };
-        let dialog = widget::container(
-            widget::column::with_capacity(7)
-                .push(self.settings_subtitle("Choose delivery"))
-                .push(self.soft_text(if is_cuda {
-                    "The CUDA Worker finished. Decide whether to keep the deployable artifact remote or bring a managed copy to this Mac."
-                } else {
-                    "The MLX artifact passed validation. Register it for model switching or reveal the managed folder in Finder."
-                }))
-                .push(self.caligo_horizontal_rule(false))
-                .push(self.dashboard_row("Output", output_name))
-                .push(self.dashboard_row("Status", &job.status))
-                .push(
-                    widget::row::with_capacity(2)
-                        .push(self.secondary_button(
-                            first_label,
-                            Message::QuantizationDeliveryPressed(first_action.into()),
-                        ))
-                        .push(self.primary_button(
-                            second_label,
-                            Message::QuantizationDeliveryPressed(second_action.into()),
-                        ))
-                        .spacing(8),
-                )
-                .push(self.secondary_button(
-                    "Choose later",
-                    Message::QuantizationDeliveryDismissed,
-                ))
-                .spacing(10)
-                .padding(18)
-                .width(Length::Fixed(560.0)),
-        )
-        .style(move |_| glass_container_style(palette, GlassVariant::Floating, GlassState::Focused));
-        widget::container(dialog)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .align_x(Alignment::Center)
-            .align_y(Alignment::Center)
-            .style(move |_| {
-                container::Style::default().background(Background::Color(palette.overlay_backdrop))
-            })
             .into()
     }
 
@@ -7730,9 +8140,6 @@ impl TokenWorkshedApp {
             .map(|detail| detail.tool_call_parser.as_str())
             .filter(|value| !value.trim().is_empty())
             .unwrap_or("-");
-        let agent_profile_label = self.profile_status_label();
-        let agent_profile_controls_active =
-            same_agent_profile_model(&selected_model, &self.current_profile_model());
         let integrity_label = self.model_integrity_status_label();
         let selected_display = selected_detail
             .map(|detail| detail.display_name.as_str())
@@ -7741,7 +8148,9 @@ impl TokenWorkshedApp {
         let selected_label = fitted_model_label(empty_dash(selected_display).into());
         let selected_label_size = fitted_model_label_size(&selected_label);
         let model_list_body: Element<'_, Message> = if self.models.is_empty() {
-            self.empty_state("No local models found. Use Community to download one.")
+            self.empty_state(
+                "No models found on the selected runtime. Download a model from Community for SGLang.",
+            )
         } else {
             widget::scrollable(list.spacing(8))
                 .height(Length::Fill)
@@ -7780,10 +8189,43 @@ impl TokenWorkshedApp {
         .style(move |_| flat_frame_host_style(palette));
 
         let palette = self.active_palette();
+        let model_action_buttons: Element<'_, Message> = {
+            let switch = iced::widget::button(centered_text("Switch".into(), CONTROL_TEXT_SIZE))
+                .padding([0, 10])
+                .width(Length::Fill)
+                .height(Length::Fixed(CONTROL_HEIGHT))
+                .class(iced_button_class(secondary_button_style(
+                    self.active_palette(),
+                    Accent::Black,
+                    false,
+                )))
+                .on_press_maybe(
+                    (!selected_model.trim().is_empty())
+                        .then(|| Message::SwitchModelPressed(selected_model.clone())),
+                );
+            let delete =
+                iced::widget::button(centered_text("Delete model".into(), CONTROL_TEXT_SIZE))
+                    .padding([0, 10])
+                    .width(Length::Fill)
+                    .height(Length::Fixed(CONTROL_HEIGHT))
+                    .class(iced_button_class(danger_button_style()))
+                    .on_press(Message::DeleteSelectedModelPressed);
+            widget::container(
+                widget::row::with_capacity(2)
+                    .push(widget::container(switch).width(Length::Fixed(112.0)))
+                    .push(widget::container(delete).width(Length::Fixed(112.0)))
+                    .spacing(8)
+                    .height(Length::Fixed(CONTROL_HEIGHT)),
+            )
+            .width(Length::Fill)
+            .height(Length::Fixed(CONTROL_HEIGHT))
+            .align_x(Alignment::End)
+            .into()
+        };
         let detail_card = widget::container(
             self.glass_layer(
                 widget::container(
-                    widget::column::with_capacity(12)
+                    widget::column::with_capacity(13)
                         .push(self.settings_subtitle("Model Details"))
                         .push(
                             widget::container(
@@ -7796,16 +8238,7 @@ impl TokenWorkshedApp {
                             .align_y(Alignment::Center),
                         )
                         .push(self.settings_divider_fill())
-                        .push(
-                            self.split_danger_action_group(
-                                "Switch",
-                                Message::SwitchModelPressed(selected_model.clone()),
-                                "Delete model",
-                                Message::DeleteSelectedModelPressed,
-                                112.0,
-                                112.0,
-                            ),
-                        )
+                        .push(model_action_buttons)
                         .push(self.dashboard_row("State", state_label))
                         .push(self.dashboard_row("Source", source_label))
                         .push(self.dashboard_row("Backend", backend_label))
@@ -7815,27 +8248,7 @@ impl TokenWorkshedApp {
                         .push(self.dashboard_row("Role", role_label))
                         .push(self.dashboard_row("Reasoning", reasoning_label))
                         .push(self.dashboard_row("Tool Parser", tool_parser_label))
-                        .push(self.dashboard_row("Active Profile", agent_profile_label))
                         .push(self.dashboard_row("Cache Check", integrity_label))
-                        .push(if agent_profile_controls_active {
-                            self.split_danger_action_group(
-                                "Recalibrate Profile",
-                                Message::RecalibrateAgentProfilePressed,
-                                "Delete Agent Profile",
-                                Message::DeleteAgentProfilePressed,
-                                136.0,
-                                136.0,
-                            )
-                        } else {
-                            self.soft_text(
-                                "Agent Profile controls apply to the active model. Switch to this model to manage its profile.",
-                            )
-                        })
-                        .push(self.soft_text(if agent_profile_controls_active {
-                            "Delete model removes local weights. Delete Profile keeps model weights; Recalibrate reruns both agent probes."
-                        } else {
-                            "Delete model removes local weights."
-                        }))
                         .spacing(8),
                 )
                 .padding(12)
@@ -7959,26 +8372,47 @@ impl TokenWorkshedApp {
 
         self.page_shell(
             "Model Settings",
-            "Manage local models, inspect runtime metadata, and tune generation/runtime options.",
+            "Manage models on the selected runtime, inspect metadata, and tune generation/runtime options.",
             content.into(),
         )
     }
 
-    fn server_page(&self) -> Element<'_, Message> {
+    fn runtime_agent_page(&self) -> Element<'_, Message> {
         let palette = self.active_palette();
+        let connection_target = self
+            .server_connection
+            .get("target")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let connected_host = {
+            let host = string_at(&connection_target, "host");
+            if host.is_empty() {
+                self.native_state.settings.remote_server_host.clone()
+            } else {
+                host
+            }
+        };
+        let connected_username = {
+            let username = string_at(&connection_target, "username");
+            if username.is_empty() {
+                self.native_state.settings.remote_server_username.clone()
+            } else {
+                username
+            }
+        };
         let connection_card = widget::container(
             self.glass_layer(
                 widget::container(
                     widget::column::with_capacity(9)
-                        .push(self.settings_subtitle("Connection"))
+                        .push(self.settings_subtitle("This Mac connection"))
                         .push(self.soft_text_wrapped(
-                            "Configure the backend URL and optional manager token.",
+                            "The saved local SGLang address is kept separate from any RoboServer tunnel.",
                         ))
                         .push(self.settings_divider_fill())
                         .push(self.settings_row(
-                            "Server URL",
+                            "Local SGLang URL",
                             self.app_text_input(
-                                "http://localhost:8000",
+                                "http://localhost:8010",
                                 &self.native_state.settings.server_url,
                                 Some(Message::ServerUrlChanged),
                                 InputField::ServerUrl,
@@ -8026,7 +8460,7 @@ impl TokenWorkshedApp {
                     widget::column::with_capacity(7)
                         .push(self.settings_subtitle("Concurrent Models"))
                         .push(self.soft_text_wrapped(
-                            "Keep additional local models running alongside the active model.",
+                            "Keep additional models running on the active runtime alongside its active model.",
                         ))
                         .push(self.settings_divider_fill())
                         .push(self.concurrent_models_panel())
@@ -8095,42 +8529,353 @@ impl TokenWorkshedApp {
         .style(move |_| flat_frame_host_style(palette));
 
         let palette = self.active_palette();
-        let content = widget::container(
+        let local_server_card = widget::container(
             self.glass_layer(
                 widget::container(
-                    widget::row::with_capacity(2)
-                        .push(
-                            widget::column::with_capacity(2)
-                                .push(connection_card)
-                                .push(dispatch_card)
-                                .spacing(12)
-                                .width(Length::FillPortion(1)),
-                        )
-                        .push(self.caligo_vertical_rule())
-                        .push(
-                            widget::container(concurrent_card)
-                                .width(Length::FillPortion(1))
-                                .height(Length::Fill),
-                        )
-                        .spacing(12)
-                        .height(Length::Fill),
+                    widget::column::with_capacity(4)
+                        .push(self.settings_subtitle("This Mac as a Server"))
+                        .push(self.soft_text_wrapped(
+                            "This controls whether the local service stays available after the window closes. It does not change the current inference target.",
+                        ))
+                        .push(self.settings_select_button_fill(
+                            if self.native_state.settings.local_server_mode_enabled {
+                                "Keep local service running after close · On"
+                            } else {
+                                "Keep local service running after close · Off"
+                            },
+                            Message::ToggleLocalServerMode(
+                                !self.native_state.settings.local_server_mode_enabled,
+                            ),
+                        ))
+                        .push(self.soft_text_wrapped(
+                            if self.native_state.settings.local_server_mode_enabled {
+                                "The local service stays available after the window closes."
+                            } else {
+                                "When enabled, closing the window keeps the local service available."
+                            },
+                        ))
+                        .spacing(10),
                 )
-                .padding(10)
-                .height(Length::Fill)
+                .padding(12)
+                .width(Length::Fill)
                 .into(),
-                GlassVariant::Panel,
+                GlassVariant::Card,
                 GlassState::Rest,
             ),
         )
-        .height(Length::Fill)
         .width(Length::Fill)
         .style(move |_| flat_frame_host_style(palette));
 
+        let remote_connected = value_flag(self.server_connection.get("connected"));
+        let remote_active = self.runtime_is_remote();
+        let active_model = if remote_active && !remote_connected {
+            "Paused while RoboServer is offline".to_string()
+        } else {
+            let value = if !self.manager_models.active_model.trim().is_empty() {
+                self.manager_models.active_model.as_str()
+            } else {
+                self.status_payload.model.as_str()
+            };
+            if value.trim().is_empty() {
+                "No model running".into()
+            } else {
+                value.to_string()
+            }
+        };
+        let target_state = if remote_active {
+            if remote_connected {
+                "Connected"
+            } else {
+                "Offline"
+            }
+        } else if self.status_payload.ok {
+            "SGLang ready"
+        } else {
+            "Waiting for SGLang"
+        };
+        let target_name = if remote_active {
+            if connected_host.is_empty() {
+                "RoboServer".into()
+            } else if connected_username.is_empty() {
+                format!("RoboServer · {connected_host}")
+            } else {
+                format!("RoboServer · {}@{}", connected_username, connected_host)
+            }
+        } else {
+            "This Mac".into()
+        };
+        let target_card = self.card_block(
+            "Runtime",
+            widget::column::with_capacity(4)
+                .push(
+                    widget::row::with_capacity(2)
+                        .push(self.runtime_target_button("This Mac", !remote_active, "local"))
+                        .push(self.runtime_target_button("RoboServer", remote_active, "remote"))
+                        .spacing(8)
+                        .width(Length::Fill),
+                )
+                .push(
+                    widget::row::with_capacity(3)
+                        .push(
+                            widget::column::with_capacity(2)
+                                .push(self.small_label("ACTIVE TARGET"))
+                                .push(widget::text(target_name).size(15)),
+                        )
+                        .push(widget::space().width(Length::Fill))
+                        .push(self.soft_pill(target_state))
+                        .align_y(Alignment::Center)
+                        .width(Length::Fill),
+                )
+                .push(
+                    widget::column::with_capacity(2)
+                        .push(self.small_label("RUNNING MODEL"))
+                        .push(
+                            widget::text(active_model)
+                                .size(14)
+                                .wrapping(text::Wrapping::Word),
+                        )
+                        .spacing(3),
+                )
+                .push(if self.runtime_remote_setup_open && !remote_connected {
+                    self.soft_text_wrapped(
+                        "RoboServer is not active yet. This Mac stays in use until the SSH connection succeeds.",
+                    )
+                } else {
+                    widget::space().into()
+                })
+                .spacing(12)
+                .width(Length::Fill)
+                .into(),
+        );
+
+        let settings_toggle = self.settings_select_button_fill(
+            if self.server_settings_open {
+                "Server settings · Hide"
+            } else {
+                "Server settings · Show"
+            },
+            Message::ServerSettingsToggled,
+        );
+        let mut body = widget::column::with_capacity(10)
+            .push(target_card)
+            .spacing(12)
+            .width(Length::Fill);
+        if self.runtime_remote_setup_open && !remote_connected {
+            body = body.push(self.remote_server_settings_card());
+        }
+        body = body
+            .push(self.agent_resources_content())
+            .push(settings_toggle);
+        if self.server_settings_open {
+            body = body
+                .push(self.server_settings_section_header(
+                    ServerSettingsSection::Connection,
+                    "Connection",
+                    "Local address and RoboServer SSH",
+                ))
+                .push({
+                    let content: Element<'_, Message> = if self.server_settings_section
+                        == Some(ServerSettingsSection::Connection)
+                    {
+                        if self.runtime_remote_setup_open && !remote_connected {
+                            widget::column::with_capacity(1)
+                                .push(connection_card)
+                                .into()
+                        } else {
+                            widget::column::with_capacity(2)
+                                .push(connection_card)
+                                .push(self.remote_server_settings_card())
+                                .spacing(10)
+                                .into()
+                        }
+                    } else {
+                        widget::space().into()
+                    };
+                    content
+                })
+                .push(self.server_settings_section_header(
+                    ServerSettingsSection::Service,
+                    "Background service",
+                    "Keep This Mac available after closing the window",
+                ))
+                .push({
+                    let content: Element<'_, Message> =
+                        if self.server_settings_section == Some(ServerSettingsSection::Service) {
+                            local_server_card.into()
+                        } else {
+                            widget::space().into()
+                        };
+                    content
+                })
+                .push(self.server_settings_section_header(
+                    ServerSettingsSection::ModelRouting,
+                    "Model routing",
+                    "Concurrent models and chat distribution",
+                ))
+                .push({
+                    let content: Element<'_, Message> = if self.server_settings_section
+                        == Some(ServerSettingsSection::ModelRouting)
+                    {
+                        widget::column::with_capacity(2)
+                            .push(concurrent_card)
+                            .push(dispatch_card)
+                            .spacing(10)
+                            .into()
+                    } else {
+                        widget::space().into()
+                    };
+                    content
+                });
+        }
         self.page_shell(
-            "Server Settings",
-            "Configure connection, parallel model serving, and dispatch behavior.",
-            content.into(),
+            "Runtime & Agent",
+            "Choose where models and Agent data run, then manage the tools available there.",
+            widget::scrollable(body)
+                .height(Length::Fill)
+                .width(Length::Fill)
+                .class(theme::iced::Scrollable::Transient)
+                .into(),
         )
+    }
+
+    fn remote_server_settings_card(&self) -> Element<'_, Message> {
+        let remote_connected = value_flag(self.server_connection.get("connected"));
+        let target = self
+            .server_connection
+            .get("target")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let host = {
+            let value = string_at(&target, "host");
+            if value.is_empty() {
+                self.native_state.settings.remote_server_host.clone()
+            } else {
+                value
+            }
+        };
+        let username = {
+            let value = string_at(&target, "username");
+            if value.is_empty() {
+                self.native_state.settings.remote_server_username.clone()
+            } else {
+                value
+            }
+        };
+        let remote_status = if remote_connected {
+            format!("Connected to {username}@{host} through SSH.")
+        } else if string_at(&self.server_connection, "mode") == "remote-disconnected" {
+            "Saved RoboServer is currently disconnected.".to_string()
+        } else {
+            "No RoboServer connected.".to_string()
+        };
+        let fingerprint_text = if self.inspected_host_fingerprint.is_empty() {
+            "Inspect the SSH host key before connecting.".to_string()
+        } else {
+            format!(
+                "SHA-256 host fingerprint: {}",
+                self.inspected_host_fingerprint
+            )
+        };
+        let inspect_key_action: Element<'_, Message> = if self.server_action_in_flight {
+            self.disabled_toggle("Working…")
+        } else {
+            self.secondary_button("Inspect host key", Message::InspectRemoteServerPressed)
+        };
+        let connect_action: Element<'_, Message> = if self.remote_host_key_changed {
+            self.disabled_toggle("Host key changed · blocked")
+        } else if self.server_action_in_flight {
+            self.disabled_toggle("Connecting…")
+        } else if self.inspected_host_fingerprint.is_empty() {
+            self.disabled_toggle("Inspect key before connecting")
+        } else {
+            self.secondary_button("Confirm & connect", Message::ConnectRemoteServerPressed)
+        };
+        let disconnect_action: Element<'_, Message> =
+            if remote_connected && !self.server_action_in_flight {
+                self.secondary_button("Disconnect", Message::DisconnectRemoteServerPressed)
+            } else {
+                self.disabled_toggle(if self.server_action_in_flight {
+                    "Working…"
+                } else {
+                    "No SSH tunnel"
+                })
+            };
+        let title = if remote_connected {
+            "RoboServer connection"
+        } else {
+            "Connect to RoboServer"
+        };
+        let palette = self.active_palette();
+        widget::container(
+            self.glass_layer(
+                widget::container(
+                    widget::column::with_capacity(10)
+                        .push(self.settings_subtitle(title))
+                        .push(self.soft_text_wrapped(
+                            "Enter the Mac server's SSH details. Review its host key before connecting. The server keeps running when this tunnel closes.",
+                        ))
+                        .push(self.settings_divider_fill())
+                        .push(self.settings_row(
+                            "SSH Host",
+                            self.app_text_input(
+                                "mac-mini.local or 192.168.1.20",
+                                &self.native_state.settings.remote_server_host,
+                                Some(Message::RemoteServerHostChanged),
+                                InputField::RemoteServerHost,
+                                false,
+                            ),
+                        ))
+                        .push(self.settings_row(
+                            "SSH Username",
+                            self.app_text_input(
+                                "your-mac-user",
+                                &self.native_state.settings.remote_server_username,
+                                Some(Message::RemoteServerUsernameChanged),
+                                InputField::RemoteServerUsername,
+                                false,
+                            ),
+                        ))
+                        .push(self.settings_row(
+                            "SSH Port",
+                            self.app_text_input(
+                                "22",
+                                &self.native_state.settings.remote_server_port,
+                                Some(Message::RemoteServerPortChanged),
+                                InputField::RemoteServerPort,
+                                false,
+                            ),
+                        ))
+                        .push(self.settings_row(
+                            "SSH Identity File (optional)",
+                            self.app_text_input(
+                                "~/.ssh/id_ed25519",
+                                &self.native_state.settings.remote_server_identity_file,
+                                Some(Message::RemoteServerIdentityChanged),
+                                InputField::RemoteServerIdentity,
+                                false,
+                            ),
+                        ))
+                        .push(self.soft_text_wrapped(&fingerprint_text))
+                        .push(
+                            widget::row::with_capacity(3)
+                                .push(inspect_key_action)
+                                .push(connect_action)
+                                .push(disconnect_action)
+                                .spacing(8),
+                        )
+                        .push(self.soft_text_wrapped(&remote_status))
+                        .spacing(10),
+                )
+                .padding(12)
+                .width(Length::Fill)
+                .into(),
+                GlassVariant::Card,
+                GlassState::Rest,
+            ),
+        )
+        .width(Length::Fill)
+        .style(move |_| flat_frame_host_style(palette))
+        .into()
     }
 
     fn logs_page(&self) -> Element<'_, Message> {
@@ -8152,8 +8897,8 @@ impl TokenWorkshedApp {
             .on_submit_maybe(Some(|_| Message::SearchCommunityPressed))
             .width(Length::Fill);
         let search_field = widget::container(search_input)
-            .padding([0, 8])
-            .height(Length::Fixed(36.0))
+            .padding([0, 10])
+            .height(Length::Fixed(CONTROL_HEIGHT))
             .width(Length::Fill)
             .align_y(Alignment::Center)
             .style(|_| workshed_field_style());
@@ -8185,18 +8930,11 @@ impl TokenWorkshedApp {
             let rows = self
                 .community_results
                 .iter()
-                .enumerate()
                 .fold(
-                    widget::column::with_capacity(self.community_results.len() * 2),
-                    |column, (index, item)| {
-                        let column = column.push(self.community_result_card(item));
-                        if index + 1 < self.community_results.len() {
-                            column.push(self.settings_divider_fill())
-                        } else {
-                            column
-                        }
-                    },
+                    widget::column::with_capacity(self.community_results.len()),
+                    |column, item| column.push(self.community_result_card(item)),
                 )
+                .spacing(8)
                 .width(Length::Fill);
             widget::scrollable(rows)
                 .height(Length::Fill)
@@ -8222,7 +8960,11 @@ impl TokenWorkshedApp {
                 content = content.push(self.community_job_card());
             }
         }
-        self.page_shell("Community", "Find models on Hugging Face.", content.into())
+        self.page_shell(
+            "Community",
+            "Download original Hugging Face Transformers checkpoints for SGLang; no runtime check is run here.",
+            content.into(),
+        )
     }
 
     fn settings_page(&self) -> Element<'_, Message> {
@@ -8470,7 +9212,7 @@ impl TokenWorkshedApp {
 
         self.section_card(
             "JetBrains Connections",
-            "Approve local IDE pairing here. Requested Agent/session scopes are shown before approval; manager and Hermes credentials are never shared.",
+            "Approve local IDE pairing here. Requested Agent/session scopes are shown before approval; server-manager credentials are never shared.",
             widget::column::with_capacity(6)
                 .push(self.settings_subtitle("Native AI Assistant setup"))
                 .push(provider)
@@ -8484,19 +9226,1094 @@ impl TokenWorkshedApp {
         )
     }
 
+    fn agent_resources_content(&self) -> Element<'_, Message> {
+        let resource_source = if self.runtime_is_remote() {
+            "RoboServer"
+        } else {
+            "This Mac"
+        };
+        let list_len = |key: &str| {
+            self.agent_dashboard
+                .get(key)
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0)
+        };
+        let summary = if self.agent_dashboard.is_null() {
+            if self.agent_refresh_in_flight {
+                format!("{resource_source} · Loading Agent data…")
+            } else {
+                format!("{resource_source} · Agent data is unavailable. Refresh to try again.")
+            }
+        } else {
+            format!(
+                "{resource_source} · {} memories · {} Skills · {} connections · {} scheduled · {} runs",
+                list_len("memories"),
+                list_len("skills"),
+                list_len("mcp_servers") + list_len("browser_profiles"),
+                list_len("jobs"),
+                list_len("runs"),
+            )
+        };
+        let header = widget::column::with_capacity(3)
+            .push(
+                widget::row::with_capacity(3)
+                    .push(self.settings_subtitle("Agent"))
+                    .push(widget::space().width(Length::Fill))
+                    .push(self.settings_select_button(
+                        "Refresh",
+                        Message::AgentRefreshPressed,
+                        84.0,
+                    ))
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+                    .width(Length::Fill),
+            )
+            .push(self.soft_text_wrapped(summary))
+            .push(if self.agent_feedback.trim().is_empty() {
+                widget::space().into()
+            } else {
+                self.soft_text_wrapped(&self.agent_feedback)
+            })
+            .spacing(5)
+            .width(Length::Fill);
+
+        if self.runtime_is_remote() && !value_flag(self.server_connection.get("connected")) {
+            return widget::column::with_capacity(2)
+                .push(header)
+                .push(self.section_card(
+                    "RoboServer data is offline",
+                    "Reconnect to continue using its Agent resources. This Mac data is not shown here.",
+                    self.soft_text_wrapped(
+                        "Use the RoboServer connection card above to reconnect. No local fallback is used.",
+                    ),
+                ))
+                .spacing(10)
+                .width(Length::Fill)
+                .into();
+        }
+
+        let resources: Element<'_, Message> = match self
+            .agent_section
+            .unwrap_or(AgentSection::Memory)
+        {
+            AgentSection::Memory => {
+                let memories = self
+                    .agent_dashboard
+                    .get("memories")
+                    .and_then(Value::as_array);
+                let mut memory_rows =
+                    widget::column::with_capacity(memories.map_or(1, |items| items.len().max(1)))
+                        .spacing(8)
+                        .width(Length::Fill);
+                if let Some(items) = memories {
+                    if items.is_empty() {
+                        memory_rows = memory_rows.push(self.soft_text("No saved memories yet."));
+                    } else {
+                        for item in items {
+                            let id = string_at(item, "id");
+                            let title = item
+                                .get("title")
+                                .and_then(Value::as_str)
+                                .unwrap_or("Memory");
+                            let revision =
+                                item.get("revision").and_then(Value::as_i64).unwrap_or(0);
+                            let edit = json!({
+                                "id":id,
+                                "title":title,
+                                "body":item.get("body").and_then(Value::as_str).unwrap_or(""),
+                                "tags":item.get("tags_json").and_then(Value::as_str)
+                                    .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                                    .unwrap_or_else(|| json!([]))
+                            });
+                            let revisions =
+                                json!({"action":"list_memory_revisions","data":{"id":id}})
+                                    .to_string();
+                            let delete = json!({"action":"delete_memory","data":{"id":id}});
+                            let item_summary = widget::column::with_capacity(2)
+                                .push(widget::text(title).size(13))
+                                .push(self.soft_text(format!("Revision {revision}")))
+                                .spacing(2)
+                                .width(Length::Fill);
+                            memory_rows = memory_rows.push(
+                                widget::row::with_capacity(4)
+                                    .push(item_summary)
+                                    .push(self.small_button(
+                                        "Edit",
+                                        Message::AgentFormOpen(AgentFormKind::Memory, edit),
+                                    ))
+                                    .push(self.small_button(
+                                        "Versions",
+                                        Message::AgentCommandTemplate(revisions),
+                                    ))
+                                    .push(self.small_button(
+                                        "Delete",
+                                        Message::AgentActionPressed(delete),
+                                    ))
+                                    .spacing(6)
+                                    .align_y(Alignment::Center),
+                            );
+                        }
+                    }
+                } else {
+                    memory_rows =
+                        memory_rows.push(self.soft_text(if self.agent_refresh_in_flight {
+                            "Loading memories…"
+                        } else {
+                            "No memory data is available."
+                        }));
+                }
+
+                let skills = self.agent_dashboard.get("skills").and_then(Value::as_array);
+                let mut skill_rows =
+                    widget::column::with_capacity(skills.map_or(1, |items| items.len().max(1)))
+                        .spacing(8)
+                        .width(Length::Fill);
+                if let Some(items) = skills {
+                    if items.is_empty() {
+                        skill_rows = skill_rows.push(self.soft_text("No Skills yet."));
+                    } else {
+                        for item in items {
+                            let id = string_at(item, "id");
+                            let name = item.get("name").and_then(Value::as_str).unwrap_or("Skill");
+                            let enabled = value_flag(item.get("enabled"));
+                            let revision =
+                                item.get("revision").and_then(Value::as_i64).unwrap_or(0);
+                            let edit = json!({
+                                "id":id,
+                                "name":name,
+                                "description":item.get("description").and_then(Value::as_str).unwrap_or(""),
+                                "body":item.get("body").and_then(Value::as_str).unwrap_or(""),
+                                "enabled":enabled
+                            });
+                            let revisions =
+                                json!({"action":"list_skill_revisions","data":{"id":id}})
+                                    .to_string();
+                            let toggle = json!({"action":"enable_skill","data":{"id":id,"enabled":!enabled}});
+                            let delete = json!({"action":"delete_skill","data":{"id":id}});
+                            let item_summary = widget::column::with_capacity(2)
+                                .push(widget::text(name).size(13))
+                                .push(self.soft_text(format!(
+                                    "{} · revision {revision}",
+                                    if enabled { "Enabled" } else { "Paused" }
+                                )))
+                                .spacing(2)
+                                .width(Length::Fill);
+                            skill_rows = skill_rows.push(
+                                widget::row::with_capacity(5)
+                                    .push(item_summary)
+                                    .push(self.small_button(
+                                        "Edit",
+                                        Message::AgentFormOpen(AgentFormKind::Skill, edit),
+                                    ))
+                                    .push(self.small_button(
+                                        "Versions",
+                                        Message::AgentCommandTemplate(revisions),
+                                    ))
+                                    .push(self.small_button(
+                                        if enabled { "Pause" } else { "Enable" },
+                                        Message::AgentActionPressed(toggle),
+                                    ))
+                                    .push(self.small_button(
+                                        "Delete",
+                                        Message::AgentActionPressed(delete),
+                                    ))
+                                    .spacing(6)
+                                    .align_y(Alignment::Center),
+                            );
+                        }
+                    }
+                } else {
+                    skill_rows = skill_rows.push(self.soft_text(if self.agent_refresh_in_flight {
+                        "Loading Skills…"
+                    } else {
+                        "No Skill data is available."
+                    }));
+                }
+
+                let add_actions = widget::row::with_capacity(2)
+                    .push(self.small_button(
+                        "Add memory",
+                        Message::AgentFormOpen(AgentFormKind::Memory, json!({})),
+                    ))
+                    .push(self.small_button(
+                        "Add Skill",
+                        Message::AgentFormOpen(AgentFormKind::Skill, json!({"enabled":true})),
+                    ))
+                    .spacing(8);
+                widget::column::with_capacity(4)
+                    .push(self.agent_form_panel(AgentFormKind::Memory))
+                    .push(self.agent_form_panel(AgentFormKind::Skill))
+                    .push(add_actions)
+                    .push(self.section_card(
+                        format!("Memory · {}", list_len("memories")),
+                        "Private notes the Agent can recall.",
+                        memory_rows.into(),
+                    ))
+                    .push(self.section_card(
+                        format!("Skills · {}", list_len("skills")),
+                        "Reusable instructions for the Agent.",
+                        skill_rows.into(),
+                    ))
+                    .push(self.agent_transfer_card())
+                    .spacing(10)
+                    .width(Length::Fill)
+                    .into()
+            }
+            AgentSection::Connections => {
+                let servers = self
+                    .agent_dashboard
+                    .get("mcp_servers")
+                    .and_then(Value::as_array);
+                let statuses = self
+                    .agent_dashboard
+                    .get("mcp_status")
+                    .and_then(Value::as_array);
+                let mut server_rows =
+                    widget::column::with_capacity(servers.map_or(1, |items| items.len().max(1)))
+                        .spacing(8)
+                        .width(Length::Fill);
+                if let Some(items) = servers {
+                    if items.is_empty() {
+                        server_rows = server_rows.push(self.soft_text("No MCP connections yet."));
+                    } else {
+                        for item in items {
+                            let id = string_at(item, "id");
+                            let name = item
+                                .get("name")
+                                .and_then(Value::as_str)
+                                .unwrap_or("MCP server");
+                            let enabled = value_flag(item.get("enabled"));
+                            let status = statuses
+                                .into_iter()
+                                .flatten()
+                                .find(|row| string_at(row, "name") == name)
+                                .map(|row| string_at(row, "state"))
+                                .filter(|state| !state.is_empty())
+                                .unwrap_or_else(|| {
+                                    if enabled {
+                                        "Ready".into()
+                                    } else {
+                                        "Paused".into()
+                                    }
+                                });
+                            let edit = json!({
+                                "id":id,
+                                "name":name,
+                                "transport":item.get("transport").and_then(Value::as_str).unwrap_or("stdio"),
+                                "command":item.get("command").and_then(Value::as_str).unwrap_or(""),
+                                "args":item.get("args").cloned().unwrap_or_else(|| json!([])),
+                                "url":item.get("url").and_then(Value::as_str).unwrap_or(""),
+                                "enabled":enabled,
+                                "timeout":item.get("timeout").and_then(Value::as_f64).unwrap_or(30.0)
+                            });
+                            let test = json!({"action":"test_mcp_server","data":{"name":name}});
+                            let delete = json!({"action":"delete_mcp_server","data":{"id":id}});
+                            let item_summary = widget::column::with_capacity(2)
+                                .push(widget::text(name).size(13))
+                                .push(self.soft_text(format!(
+                                    "{status} · {}",
+                                    string_at(item, "transport")
+                                )))
+                                .spacing(2)
+                                .width(Length::Fill);
+                            server_rows =
+                                server_rows.push(
+                                    widget::row::with_capacity(4)
+                                        .push(item_summary)
+                                        .push(self.small_button(
+                                            "Edit",
+                                            Message::AgentFormOpen(AgentFormKind::McpServer, edit),
+                                        ))
+                                        .push(self.small_button(
+                                            "Test",
+                                            Message::AgentActionPressed(test),
+                                        ))
+                                        .push(self.small_button(
+                                            "Delete",
+                                            Message::AgentActionPressed(delete),
+                                        ))
+                                        .spacing(6)
+                                        .align_y(Alignment::Center),
+                                );
+                        }
+                    }
+                } else {
+                    server_rows =
+                        server_rows.push(self.soft_text(if self.agent_refresh_in_flight {
+                            "Loading connections…"
+                        } else {
+                            "Connection data is unavailable."
+                        }));
+                }
+
+                let profiles = self
+                    .agent_dashboard
+                    .get("browser_profiles")
+                    .and_then(Value::as_array);
+                let mut profile_rows =
+                    widget::column::with_capacity(profiles.map_or(1, |items| items.len().max(1)))
+                        .spacing(8)
+                        .width(Length::Fill);
+                if let Some(items) = profiles {
+                    if items.is_empty() {
+                        profile_rows =
+                            profile_rows.push(self.soft_text("No browser windows are approved."));
+                    } else {
+                        for item in items {
+                            let id = string_at(item, "id");
+                            let revoke =
+                                json!({"action":"revoke_browser_profile","data":{"id":id}});
+                            let label = format!(
+                                "{} · window {}",
+                                item.get("app_name")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("Chromium"),
+                                item.get("window_id").and_then(Value::as_i64).unwrap_or(0)
+                            );
+                            profile_rows = profile_rows.push(
+                                widget::row::with_capacity(2)
+                                    .push(widget::text(label).size(13).width(Length::Fill))
+                                    .push(self.small_button(
+                                        "Revoke",
+                                        Message::AgentActionPressed(revoke),
+                                    ))
+                                    .spacing(6)
+                                    .align_y(Alignment::Center),
+                            );
+                        }
+                    }
+                }
+
+                let tools = self
+                    .agent_dashboard
+                    .get("mcp_tools")
+                    .and_then(Value::as_array);
+                let tool_summary = if let Some(tools) = tools {
+                    let names = tools
+                        .iter()
+                        .take(8)
+                        .map(|tool| {
+                            let server = string_at(tool, "server");
+                            let name = string_at(tool, "name");
+                            if server.is_empty() {
+                                name
+                            } else {
+                                format!("{server} · {name}")
+                            }
+                        })
+                        .filter(|name| !name.trim().is_empty())
+                        .collect::<Vec<_>>();
+                    if tools.is_empty() {
+                        "No tools available from connected servers.".to_string()
+                    } else {
+                        let mut summary = names.join(" · ");
+                        if tools.len() > names.len() {
+                            summary.push_str(&format!(" · +{} more", tools.len() - names.len()));
+                        }
+                        summary
+                    }
+                } else if self.agent_refresh_in_flight {
+                    "Loading tools…".to_string()
+                } else {
+                    "Tool catalog is unavailable.".to_string()
+                };
+                let browser_actions = widget::row::with_capacity(3)
+                    .push(self.small_button(
+                        "Find browser windows",
+                        Message::AgentCommandTemplate(
+                            json!({"action":"list_browser_windows","data":{}}).to_string(),
+                        ),
+                    ))
+                    .push(self.small_button(
+                        "Approve a window",
+                        Message::AgentCommandTemplate(
+                            json!({"action":"approve_browser_profile","data":{"pid":0,"window_id":0,"app_name":"Google Chrome","bundle_id":"com.google.Chrome"}}).to_string(),
+                        ),
+                    ))
+                    .push(self.small_button(
+                        "Add MCP server",
+                        Message::AgentFormOpen(AgentFormKind::McpServer, json!({"transport":"stdio","enabled":true,"timeout":30.0})),
+                    ))
+                    .spacing(8);
+                widget::column::with_capacity(5)
+                    .push(self.agent_form_panel(AgentFormKind::McpServer))
+                    .push(browser_actions)
+                    .push(
+                        self.section_card(
+                            format!("MCP · {}", list_len("mcp_servers")),
+                            "Connected services and their available tools.",
+                            widget::column::with_capacity(2)
+                                .push(server_rows)
+                                .push(self.soft_text_wrapped(tool_summary))
+                                .spacing(8)
+                                .into(),
+                        ),
+                    )
+                    .push(self.section_card(
+                        format!("Browser access · {}", list_len("browser_profiles")),
+                        "Only approved browser windows are available to the Agent.",
+                        profile_rows.into(),
+                    ))
+                    .spacing(10)
+                    .width(Length::Fill)
+                    .into()
+            }
+            AgentSection::Schedule => {
+                let jobs = self.agent_dashboard.get("jobs").and_then(Value::as_array);
+                let mut rows =
+                    widget::column::with_capacity(jobs.map_or(1, |items| items.len().max(1)))
+                        .spacing(8)
+                        .width(Length::Fill);
+                if let Some(items) = jobs {
+                    if items.is_empty() {
+                        rows = rows.push(self.soft_text("No scheduled tasks yet."));
+                    } else {
+                        for item in items {
+                            let id = string_at(item, "id");
+                            let title = item
+                                .get("title")
+                                .and_then(Value::as_str)
+                                .unwrap_or("Scheduled task");
+                            let enabled = value_flag(item.get("enabled"));
+                            let state = item
+                                .get("state")
+                                .and_then(Value::as_str)
+                                .unwrap_or("unknown");
+                            let schedule =
+                                item.get("schedule").and_then(Value::as_str).unwrap_or("");
+                            let toggle =
+                                json!({"action":"enable_job","data":{"id":id,"enabled":!enabled}});
+                            let run_once = json!({"action":"run_job_once","data":{"id":id}});
+                            let cancel = json!({"action":"cancel_job","data":{"id":id}});
+                            let delete = json!({"action":"delete_job","data":{"id":id}});
+                            let item_summary = widget::column::with_capacity(2)
+                                .push(widget::text(title).size(13))
+                                .push(self.soft_text(format!("{state} · {schedule}")))
+                                .spacing(2)
+                                .width(Length::Fill);
+                            rows =
+                                rows.push(
+                                    widget::row::with_capacity(6)
+                                        .push(item_summary)
+                                        .push(self.small_button(
+                                            "Edit",
+                                            Message::AgentFormOpen(
+                                                AgentFormKind::ScheduledTask,
+                                                item.clone(),
+                                            ),
+                                        ))
+                                        .push(self.small_button(
+                                            if enabled { "Pause" } else { "Resume" },
+                                            Message::AgentActionPressed(toggle),
+                                        ))
+                                        .push(self.small_button(
+                                            "Run now",
+                                            Message::AgentActionPressed(run_once),
+                                        ))
+                                        .push(self.small_button(
+                                            "Stop",
+                                            Message::AgentActionPressed(cancel),
+                                        ))
+                                        .push(self.small_button(
+                                            "Delete",
+                                            Message::AgentActionPressed(delete),
+                                        ))
+                                        .spacing(6)
+                                        .align_y(Alignment::Center),
+                                );
+                        }
+                    }
+                } else {
+                    rows = rows.push(self.soft_text(if self.agent_refresh_in_flight {
+                        "Loading scheduled tasks…"
+                    } else {
+                        "Task data is unavailable."
+                    }));
+                }
+                widget::column::with_capacity(3)
+                    .push(self.agent_form_panel(AgentFormKind::ScheduledTask))
+                    .push(self.small_button(
+                        "New scheduled task",
+                        Message::AgentFormOpen(
+                            AgentFormKind::ScheduledTask,
+                            json!({
+                                "schedule":"@every 3600",
+                                "timezone":"UTC",
+                                "tool_scope":["web_search","web_fetch"],
+                                "authorization_scope":{"computer_control":false,"allowed_paths":[],"allowed_domains":[],"browser_profile_ids":[]}
+                            }),
+                        ),
+                    ))
+                    .push(self.section_card(
+                        format!("Scheduled tasks · {}", list_len("jobs")),
+                        "Tasks run under the selected server's signed-in macOS account.",
+                        rows.into(),
+                    ))
+                    .spacing(10)
+                    .width(Length::Fill)
+                    .into()
+            }
+            AgentSection::Activity => {
+                let runs = self.agent_dashboard.get("runs").and_then(Value::as_array);
+                let jobs = self.agent_dashboard.get("jobs").and_then(Value::as_array);
+                let mut rows =
+                    widget::column::with_capacity(runs.map_or(1, |items| items.len().max(1)))
+                        .spacing(8)
+                        .width(Length::Fill);
+                if let Some(items) = runs {
+                    if items.is_empty() {
+                        rows = rows.push(self.soft_text("No scheduled runs have been recorded."));
+                    } else {
+                        for item in items.iter().take(60) {
+                            let job_id = string_at(item, "job_id");
+                            let title = jobs
+                                .into_iter()
+                                .flatten()
+                                .find(|job| string_at(job, "id") == job_id)
+                                .map(|job| string_at(job, "title"))
+                                .filter(|title| !title.is_empty())
+                                .unwrap_or_else(|| "Scheduled task".into());
+                            let state = item
+                                .get("state")
+                                .and_then(Value::as_str)
+                                .unwrap_or("unknown");
+                            let summary = item
+                                .get("summary")
+                                .and_then(Value::as_str)
+                                .filter(|summary| !summary.is_empty())
+                                .or_else(|| item.get("error").and_then(Value::as_str))
+                                .unwrap_or("No additional details.");
+                            let timestamp = item
+                                .get("started_at")
+                                .and_then(Value::as_i64)
+                                .or_else(|| {
+                                    item.get("started_at")
+                                        .and_then(Value::as_f64)
+                                        .map(|value| value as i64)
+                                })
+                                .unwrap_or(0);
+                            let details = widget::column::with_capacity(2)
+                                .push(widget::text(format!("{title} · {state}")).size(13))
+                                .push(self.soft_text_wrapped(format!(
+                                    "{} · {summary}",
+                                    if timestamp > 0 {
+                                        format_timestamp_label("Started", timestamp)
+                                    } else {
+                                        "Started".into()
+                                    }
+                                )))
+                                .spacing(2)
+                                .width(Length::Fill);
+                            rows = rows.push(details);
+                        }
+                    }
+                } else {
+                    rows = rows.push(self.soft_text(if self.agent_refresh_in_flight {
+                        "Loading activity…"
+                    } else {
+                        "Activity data is unavailable."
+                    }));
+                }
+                self.section_card(
+                    format!("Recent activity · {}", list_len("runs")),
+                    "Latest scheduled task outcomes.",
+                    rows.into(),
+                )
+                .into()
+            }
+        };
+
+        let action_panel = if self.agent_action_panel_open {
+            let action_editor = widget::text_editor(&self.agent_command_content)
+                .on_action(Message::AgentCommandAction)
+                .wrapping(text::Wrapping::WordOrGlyph)
+                .padding(8)
+                .size(12)
+                .height(Length::Fixed(180.0));
+            self.section_card(
+                "Action details",
+                "Advanced edits and integrations. Review the JSON before running it.",
+                widget::column::with_capacity(3)
+                    .push(action_editor)
+                    .push(self.secondary_button("Run action", Message::AgentCommandPressed))
+                    .push(self.soft_text_wrapped(&self.agent_command_message))
+                    .spacing(8)
+                    .width(Length::Fill)
+                    .into(),
+            )
+        } else {
+            widget::space().into()
+        };
+        let advanced_toggle = self.small_toggle(
+            if self.agent_action_panel_open {
+                "Hide advanced details"
+            } else {
+                "Advanced action details"
+            },
+            self.agent_action_panel_open,
+            Message::AgentActionPanelToggled,
+        );
+        let memory_header = self.agent_section_header(
+            AgentSection::Memory,
+            "Memory & Skills",
+            format!(
+                "{} memories · {} Skills",
+                list_len("memories"),
+                list_len("skills")
+            ),
+        );
+        let connections_header = self.agent_section_header(
+            AgentSection::Connections,
+            "Connections",
+            format!(
+                "{} services · {} browser windows",
+                list_len("mcp_servers"),
+                list_len("browser_profiles")
+            ),
+        );
+        let schedule_header = self.agent_section_header(
+            AgentSection::Schedule,
+            "Scheduled Tasks",
+            format!("{} tasks", list_len("jobs")),
+        );
+        let activity_header = self.agent_section_header(
+            AgentSection::Activity,
+            "Activity",
+            format!("{} recent runs", list_len("runs")),
+        );
+        let mut sections = widget::column::with_capacity(8).push(header).spacing(8);
+        match self.agent_section {
+            Some(AgentSection::Memory) => {
+                sections = sections
+                    .push(memory_header)
+                    .push(resources)
+                    .push(connections_header)
+                    .push(schedule_header)
+                    .push(activity_header);
+            }
+            Some(AgentSection::Connections) => {
+                sections = sections
+                    .push(memory_header)
+                    .push(connections_header)
+                    .push(resources)
+                    .push(schedule_header)
+                    .push(activity_header);
+            }
+            Some(AgentSection::Schedule) => {
+                sections = sections
+                    .push(memory_header)
+                    .push(connections_header)
+                    .push(schedule_header)
+                    .push(resources)
+                    .push(activity_header);
+            }
+            Some(AgentSection::Activity) => {
+                sections = sections
+                    .push(memory_header)
+                    .push(connections_header)
+                    .push(schedule_header)
+                    .push(activity_header)
+                    .push(resources);
+            }
+            None => {
+                sections = sections
+                    .push(memory_header)
+                    .push(connections_header)
+                    .push(schedule_header)
+                    .push(activity_header);
+            }
+        }
+        sections
+            .push(advanced_toggle)
+            .push(action_panel)
+            .width(Length::Fill)
+            .into()
+    }
+
+    fn agent_section_header(
+        &self,
+        section: AgentSection,
+        title: &'static str,
+        summary: String,
+    ) -> Element<'_, Message> {
+        let selected = self.agent_section == Some(section);
+        let palette = self.active_palette();
+        let row = widget::row::with_capacity(3)
+            .push(widget::text(if selected { "⌄" } else { "›" }).size(16))
+            .push(
+                widget::column::with_capacity(2)
+                    .push(widget::text(title).size(13))
+                    .push(self.soft_text(summary))
+                    .spacing(2)
+                    .width(Length::Fill),
+            )
+            .push(widget::space().width(Length::Fill))
+            .align_y(Alignment::Center)
+            .width(Length::Fill);
+        iced::widget::button(row)
+            .padding([8, 11])
+            .width(Length::Fill)
+            .class(iced_button_class(secondary_button_style(
+                palette,
+                self.accent(),
+                selected,
+            )))
+            .on_press(Message::AgentSectionPressed(section))
+            .into()
+    }
+
+    fn runtime_target_button(
+        &self,
+        label: &'static str,
+        selected: bool,
+        target: &'static str,
+    ) -> Element<'_, Message> {
+        iced::widget::button(centered_text(label.into(), CONTROL_TEXT_SIZE))
+            .padding([0, 10])
+            .width(Length::FillPortion(1))
+            .height(Length::Fixed(CONTROL_HEIGHT))
+            .class(iced_button_class(secondary_button_style(
+                self.active_palette(),
+                self.accent(),
+                selected,
+            )))
+            .on_press(Message::RuntimeTargetPressed(target.into()))
+            .into()
+    }
+
+    fn server_settings_section_header(
+        &self,
+        section: ServerSettingsSection,
+        title: &'static str,
+        summary: &'static str,
+    ) -> Element<'_, Message> {
+        let selected = self.server_settings_section == Some(section);
+        let row = widget::row::with_capacity(3)
+            .push(widget::text(if selected { "⌄" } else { "›" }).size(16))
+            .push(
+                widget::column::with_capacity(2)
+                    .push(widget::text(title).size(12))
+                    .push(self.soft_text(summary))
+                    .spacing(2)
+                    .width(Length::Fill),
+            )
+            .push(widget::space().width(Length::Fill))
+            .align_y(Alignment::Center)
+            .width(Length::Fill);
+        iced::widget::button(row)
+            .padding([8, 11])
+            .width(Length::Fill)
+            .class(iced_button_class(secondary_button_style(
+                self.active_palette(),
+                self.accent(),
+                selected,
+            )))
+            .on_press(Message::ServerSettingsSectionPressed(section))
+            .into()
+    }
+
+    fn agent_form_text_input(
+        &self,
+        field: &'static str,
+        placeholder: &'static str,
+        secure: bool,
+    ) -> Element<'_, Message> {
+        let value = self
+            .agent_form
+            .as_ref()
+            .and_then(|form| form.fields.get(field))
+            .map(String::as_str)
+            .unwrap_or_default();
+        let palette = self.active_palette();
+        let input = widget::text_input(placeholder, value)
+            .padding([8, 10])
+            .size(CONTROL_TEXT_SIZE)
+            .font(cosmic::font::default());
+        let input = if secure { input.password() } else { input }
+            .style(app_input_style(self.accent().display_color()))
+            .on_input(move |value| Message::AgentFormFieldChanged(field.into(), value))
+            .width(Length::Fill);
+        widget::container(self.glass_layer(input.into(), GlassVariant::Input, GlassState::Rest))
+            .height(Length::Fixed(CONTROL_HEIGHT))
+            .style(move |_| input_shell_style(palette, false))
+            .into()
+    }
+
+    fn agent_form_panel(&self, kind: AgentFormKind) -> Element<'_, Message> {
+        let Some(form) = self.agent_form.as_ref().filter(|form| form.kind == kind) else {
+            return widget::space().into();
+        };
+        let long_field = kind.long_field();
+        let long_label = match kind {
+            AgentFormKind::Memory => "Memory text",
+            AgentFormKind::Skill => "Markdown instructions",
+            AgentFormKind::McpServer => "Arguments · one per line",
+            AgentFormKind::ScheduledTask => "Task prompt",
+        };
+        let long_editor = widget::text_editor(&self.agent_form_body)
+            .on_action(Message::AgentFormBodyAction)
+            .wrapping(text::Wrapping::WordOrGlyph)
+            .padding(8)
+            .size(12)
+            .height(Length::Fixed(if kind == AgentFormKind::ScheduledTask {
+                132.0
+            } else {
+                110.0
+            }));
+        let mut fields = widget::column::with_capacity(14)
+            .spacing(8)
+            .width(Length::Fill);
+        match kind {
+            AgentFormKind::Memory => {
+                fields = fields
+                    .push(self.settings_row(
+                        "Title",
+                        self.agent_form_text_input("title", "A short memory title", false),
+                    ))
+                    .push(self.settings_row(
+                        "Tags",
+                        self.agent_form_text_input("tags", "Comma separated", false),
+                    ));
+            }
+            AgentFormKind::Skill => {
+                fields = fields
+                    .push(self.settings_row(
+                        "Name",
+                        self.agent_form_text_input("name", "Skill name", false),
+                    ))
+                    .push(self.settings_row(
+                        "Description",
+                        self.agent_form_text_input("description", "What this Skill does", false),
+                    ))
+                    .push(self.small_toggle(
+                        if form.enabled {
+                            "Skill enabled"
+                        } else {
+                            "Skill paused"
+                        },
+                        form.enabled,
+                        Message::AgentFormToggleChanged("enabled".into(), !form.enabled),
+                    ));
+            }
+            AgentFormKind::McpServer => {
+                let transport = form
+                    .fields
+                    .get("transport")
+                    .map(String::as_str)
+                    .unwrap_or("stdio");
+                let secret_value = self.agent_form_text_input("secret_value", "Secret value", true);
+                let name_field: Element<'_, Message> = if form.original.get("id").is_some() {
+                    widget::column::with_capacity(2)
+                        .push(self.settings_row(
+                            "Name",
+                            self.soft_text_wrapped(
+                                form.fields.get("name").map(String::as_str).unwrap_or_default(),
+                            ),
+                        ))
+                        .push(self.soft_text(
+                            "Connection names stay fixed while editing so saved Keychain secrets remain attached.",
+                        ))
+                        .into()
+                } else {
+                    self.settings_row(
+                        "Name",
+                        self.agent_form_text_input("name", "Connection name", false),
+                    )
+                };
+                fields = fields
+                    .push(name_field)
+                    .push(
+                        widget::row::with_capacity(2)
+                            .push(self.small_toggle(
+                                "STDIO",
+                                transport == "stdio",
+                                Message::AgentFormFieldChanged("transport".into(), "stdio".into()),
+                            ))
+                            .push(self.small_toggle(
+                                "HTTP",
+                                transport == "sse",
+                                Message::AgentFormFieldChanged("transport".into(), "sse".into()),
+                            ))
+                            .spacing(8),
+                    )
+                    .push(self.settings_row(
+                        "Command",
+                        self.agent_form_text_input("command", "Executable for STDIO", false),
+                    ))
+                    .push(self.settings_row(
+                        "Server URL",
+                        self.agent_form_text_input("url", "https://… for HTTP", false),
+                    ))
+                    .push(self.settings_row(
+                        "Timeout",
+                        self.agent_form_text_input("timeout", "30 seconds", false),
+                    ))
+                    .push(self.settings_row(
+                        "Secret name",
+                        self.agent_form_text_input("secret_name", "Optional environment variable", false),
+                    ))
+                    .push(self.settings_row("Secret", secret_value))
+                    .push(self.soft_text_wrapped(
+                        "Secret values are sent directly to the existing Keychain storage. Saved values are never displayed; leave the fields blank to keep them unchanged.",
+                    ))
+                    .push(self.small_toggle(
+                        if form.enabled { "Connection enabled" } else { "Connection paused" },
+                        form.enabled,
+                        Message::AgentFormToggleChanged("enabled".into(), !form.enabled),
+                    ));
+            }
+            AgentFormKind::ScheduledTask => {
+                fields = fields
+                    .push(self.settings_row(
+                        "Title",
+                        self.agent_form_text_input("title", "Task name", false),
+                    ))
+                    .push(self.settings_row(
+                        "Schedule",
+                        self.agent_form_text_input("schedule", "For example: @every 3600", false),
+                    ))
+                    .push(self.settings_row(
+                        "Timezone",
+                        self.agent_form_text_input("timezone", "UTC", false),
+                    ))
+                    .push(self.settings_row(
+                        "SGLang model",
+                        self.agent_form_text_input("model_id", "Model ID on this runtime", false),
+                    ))
+                    .push(self.settings_row(
+                        "Tool scope",
+                        self.agent_form_text_input(
+                            "tool_scope",
+                            "Comma separated tool names",
+                            false,
+                        ),
+                    ))
+                    .push(self.settings_row(
+                        "Allowed paths",
+                        self.agent_form_text_input("allowed_paths", "Comma separated paths", false),
+                    ))
+                    .push(self.settings_row(
+                        "Allowed domains",
+                        self.agent_form_text_input(
+                            "allowed_domains",
+                            "Comma separated domains",
+                            false,
+                        ),
+                    ))
+                    .push(self.settings_row(
+                        "Browser profiles",
+                        self.agent_form_text_input(
+                            "browser_profile_ids",
+                            "Approved profile IDs",
+                            false,
+                        ),
+                    ))
+                    .push(self.small_toggle(
+                        if form.computer_control {
+                            "Computer access authorized"
+                        } else {
+                            "Computer access off"
+                        },
+                        form.computer_control,
+                        Message::AgentFormToggleChanged(
+                            "computer_control".into(),
+                            !form.computer_control,
+                        ),
+                    ));
+            }
+        }
+        fields = fields
+            .push(self.settings_row(long_label, long_editor.into()))
+            .push(
+                widget::row::with_capacity(2)
+                    .push(self.secondary_button(
+                        if self.agent_form_saving {
+                            "Saving…"
+                        } else {
+                            "Save"
+                        },
+                        Message::AgentFormSavePressed,
+                    ))
+                    .push(self.secondary_button("Cancel", Message::AgentFormCancelPressed))
+                    .spacing(8),
+            )
+            .push(self.soft_text_wrapped(&self.agent_form_message));
+        let _ = long_field;
+        self.section_card(
+            format!("{} · {}", kind.title(), if form.original.get("id").is_some() { "Edit" } else { "New" }),
+            "Use these fields for normal changes. The advanced JSON action area stays available below.",
+            fields.into(),
+        )
+    }
+
+    fn agent_transfer_card(&self) -> Element<'_, Message> {
+        let transfer_preview_text = agent_transfer_preview_text(
+            &self.agent_transfer_payload,
+            &self.agent_transfer_preview,
+            &self.agent_transfer_preview_direction,
+        );
+        let remote_connected = value_flag(self.server_connection.get("connected"));
+        let controls: Element<'_, Message> = if remote_connected {
+            widget::column::with_capacity(4)
+                .push(
+                    widget::row::with_capacity(3)
+                        .push(self.agent_transfer_category_button("memories", "Memories"))
+                        .push(self.agent_transfer_category_button("skills", "Skills"))
+                        .push(
+                            self.agent_transfer_category_button("chat_history", "Searchable chats"),
+                        )
+                        .spacing(6),
+                )
+                .push(
+                    widget::row::with_capacity(2)
+                        .push(self.secondary_button(
+                            "Preview This Mac → RoboServer",
+                            Message::AgentTransferPreviewPressed("local-to-remote".into()),
+                        ))
+                        .push(self.secondary_button(
+                            "Preview RoboServer → This Mac",
+                            Message::AgentTransferPreviewPressed("remote-to-local".into()),
+                        ))
+                        .spacing(8),
+                )
+                .push(self.soft_text_wrapped(&self.agent_transfer_message))
+                .push(self.soft_text_wrapped(&transfer_preview_text))
+                .push(self.secondary_button(
+                    if self.agent_transfer_in_flight {
+                        "Working…"
+                    } else {
+                        "Import Reviewed Data"
+                    },
+                    Message::AgentTransferImportPressed,
+                ))
+                .spacing(8)
+                .into()
+        } else {
+            self.soft_text_wrapped(
+                "Connect to RoboServer to preview and selectively import memories, Skills, or searchable chats.",
+            )
+        };
+        self.section_card(
+            "Move Agent Data",
+            "Preview before importing. Credentials, MCP settings, scheduled tasks, and browser sign-in data are excluded.",
+            controls,
+        )
+    }
+
     fn about_page(&self) -> Element<'_, Message> {
         let native_version = env!("CARGO_PKG_VERSION");
         let token_version = empty_dash(&self.token_workshed_version);
-        let vllm_version = empty_dash(&self.vllm_mlx_version);
+        let sglang_version = empty_dash(&self.sglang_version);
         let selected_model = empty_dash(&self.native_state.selected_model);
         let about_card = self.section_card(
-            "token-workshed",
-            "Native Rust UI for local vllm-mlx serving, chat, model management, and community deployment.",
+            "token-workshed NextCore",
+            "Native Rust UI for SGLang serving, chat, model management, and community deployment.",
             widget::column::with_capacity(8)
-                .push(self.dashboard_row("token-workshed", token_version))
+                .push(self.dashboard_row("token-workshed NextCore", token_version))
                 .push(self.dashboard_row("native-ui", native_version))
-                .push(self.dashboard_row("vllm-mlx", vllm_version))
-                .push(self.dashboard_row("Backend", "vllm-mlx desktop manager"))
+                .push(self.dashboard_row("SGLang", sglang_version))
+                .push(self.dashboard_row("Backend", "SGLang desktop manager"))
                 .push(self.dashboard_row("Active Model", selected_model))
                 .push(self.dashboard_row("Developer", "Taylor He"))
                 .spacing(8)
@@ -8551,25 +10368,16 @@ impl TokenWorkshedApp {
     ) -> Element<'a, Message> {
         let palette = self.active_palette();
         widget::container(
-            self.glass_layer(
-                widget::container(
-                    widget::column::with_capacity(4)
-                        .push(self.settings_subtitle(title))
-                        .push(self.soft_text_wrapped(subtitle))
-                        .push(self.caligo_horizontal_rule(false))
-                        .push(widget::container(content).width(Length::Fill))
-                        .spacing(8)
-                        .width(Length::Fill),
-                )
-                .padding(12)
-                .width(Length::Fill)
-                .into(),
-                GlassVariant::Card,
-                GlassState::Rest,
-            ),
+            widget::column::with_capacity(3)
+                .push(self.settings_subtitle(title))
+                .push(self.soft_text_wrapped(subtitle))
+                .push(widget::container(content).width(Length::Fill))
+                .spacing(8)
+                .width(Length::Fill),
         )
+        .padding(12)
         .width(Length::Fill)
-        .style(move |_| flat_section_style(palette))
+        .style(move |_| palette.card_style(true))
         .into()
     }
 
@@ -8704,54 +10512,52 @@ impl TokenWorkshedApp {
                 .push(content)
                 .spacing(8),
         )
-        .padding(10)
+        .padding(12)
         .width(Length::Fill)
         .style(move |_| palette.card_style(true))
         .into()
     }
 
-    fn chat_bubble<'a>(&'a self, role: &'a str, content: &'a str) -> Element<'a, Message> {
-        let is_user = role == "user";
-        let is_thinking = role == "thinking";
-        let is_thinking_summary = is_thinking && content.trim_start().starts_with("thought for ");
-        let text = if content.trim().is_empty() {
-            "..."
-        } else {
-            content
-        };
-        let body: Element<'a, Message> = if is_thinking {
-            if is_thinking_summary {
-                widget::text(text)
-                    .font(Font::MONOSPACE)
-                    .size(11)
-                    .wrapping(text::Wrapping::None)
-                    .into()
+    fn chat_bubble<'a>(
+        &'a self,
+        message: &'a StoredMessage,
+        is_pending: bool,
+    ) -> Element<'a, Message> {
+        let is_user = message.role == "user";
+        let trimmed = message.content.trim();
+        let text = if message.role == "assistant"
+            && (trimmed.is_empty() || matches!(trimmed, "." | ".." | "..."))
+        {
+            if is_pending {
+                "Thinking…"
             } else {
-                widget::column::with_capacity(2)
-                    .push(
-                        widget::text("thinking")
-                            .font(Font::MONOSPACE)
-                            .size(11)
-                            .wrapping(text::Wrapping::None),
-                    )
-                    .push(self.markdown_content(text, false))
-                    .spacing(5)
-                    .into()
+                "Previous response stopped before an answer was saved."
             }
         } else {
-            self.markdown_content(text, is_user)
+            message.content.as_str()
         };
+        let mut body = widget::column::with_capacity(message.attachments.len() + 3)
+            .spacing(8)
+            .push(self.markdown_content(text, is_user));
+
+        body = message.attachments.iter().fold(body, |column, attachment| {
+            column.push(self.chat_attachment(attachment))
+        });
+
+        let body = body.width(if is_user {
+            Length::Shrink
+        } else {
+            Length::Fill
+        });
         let bubble = widget::container(body)
             .padding([8, 10])
-            .width(Length::Shrink)
+            .width(if is_user {
+                Length::Shrink
+            } else {
+                Length::FillPortion(3)
+            })
             .max_width(720)
-            .style(move |_| {
-                if is_thinking {
-                    thinking_bubble_style()
-                } else {
-                    chat_bubble_style(is_user)
-                }
-            });
+            .style(move |_| chat_bubble_style(is_user));
 
         let row = if is_user {
             widget::row::with_capacity(2)
@@ -8760,76 +10566,97 @@ impl TokenWorkshedApp {
         } else {
             widget::row::with_capacity(2)
                 .push(bubble)
-                .push(widget::space().width(Length::Fill))
+                .push(widget::space().width(Length::FillPortion(1)))
         };
 
         row.width(Length::Fill).into()
     }
 
+    fn chat_action_button<'a>(&'a self, label: String, message: Message) -> Element<'a, Message> {
+        iced::widget::button(widget::text(label).size(11))
+            .padding([4, 8])
+            .class(iced_button_class(secondary_button_style(
+                self.active_palette(),
+                self.accent(),
+                false,
+            )))
+            .on_press(message)
+            .into()
+    }
+
+    fn chat_attachment<'a>(&'a self, attachment: &'a StoredAttachment) -> Element<'a, Message> {
+        if attachment.kind != "image" {
+            return self.soft_text("Unsupported chat attachment.");
+        }
+        let path = PathBuf::from(&attachment.path);
+        if !path.is_file() {
+            return self.soft_text("Captured image is no longer available.");
+        }
+        let image = widget::image::Image::new(widget::image::Handle::from_path(path))
+            .width(Length::Fill)
+            .height(Length::Fixed(380.0))
+            .content_fit(ContentFit::Contain)
+            .border_radius([8.0; 4]);
+        widget::column::with_capacity(2)
+            .spacing(4)
+            .push(self.soft_text(&attachment.label))
+            .push(image)
+            .into()
+    }
+
     fn markdown_content<'a>(&'a self, content: &'a str, is_user: bool) -> Element<'a, Message> {
         let blocks = parse_markdown_blocks(content);
-        let column = blocks.into_iter().fold(
-            widget::column::with_capacity(8).spacing(5),
-            |column, block| column.push(self.markdown_block(block, is_user)),
-        );
+        let column = blocks
+            .into_iter()
+            .fold(
+                widget::column::with_capacity(8).spacing(5),
+                |column, block| column.push(self.markdown_block(block, is_user)),
+            )
+            .width(if is_user {
+                Length::Shrink
+            } else {
+                Length::Fill
+            });
         column.into()
     }
 
     fn markdown_block(&self, block: MarkdownBlock, is_user: bool) -> Element<'_, Message> {
         match block {
-            MarkdownBlock::Paragraph(text) => widget::text(clean_inline_markdown(&text))
-                .size(13)
-                .wrapping(text::Wrapping::WordOrGlyph)
-                .into(),
+            MarkdownBlock::Paragraph(text) => self.markdown_inline_text(&text, 13, is_user),
             MarkdownBlock::Heading { level, text } => {
                 let size = match level {
                     1 => 18,
                     2 => 16,
                     _ => 14,
                 };
-                widget::text(clean_inline_markdown(&text))
-                    .size(size)
-                    .wrapping(text::Wrapping::WordOrGlyph)
-                    .into()
+                self.markdown_inline_text(&text, size, is_user)
             }
             MarkdownBlock::Bullet(text) => widget::row::with_capacity(2)
-                .push(widget::text("•").size(13))
-                .push(
-                    widget::text(clean_inline_markdown(&text))
-                        .size(13)
-                        .width(Length::Fill)
-                        .wrapping(text::Wrapping::WordOrGlyph),
-                )
+                .push(widget::text("•").size(13).selectable())
+                .push(self.markdown_inline_text(&text, 13, is_user))
                 .spacing(6)
                 .align_y(Alignment::Start)
                 .into(),
             MarkdownBlock::Ordered { number, text } => widget::row::with_capacity(2)
-                .push(widget::text(format!("{number}.")).size(13))
-                .push(
-                    widget::text(clean_inline_markdown(&text))
-                        .size(13)
-                        .width(Length::Fill)
-                        .wrapping(text::Wrapping::WordOrGlyph),
-                )
+                .push(widget::text(format!("{number}.")).size(13).selectable())
+                .push(self.markdown_inline_text(&text, 13, is_user))
                 .spacing(6)
                 .align_y(Alignment::Start)
                 .into(),
-            MarkdownBlock::Quote(text) => widget::container(
-                widget::text(clean_inline_markdown(&text))
-                    .size(13)
+            MarkdownBlock::Quote(text) => {
+                widget::container(self.markdown_inline_text(&text, 13, is_user))
+                    .padding([5, 8])
                     .width(Length::Fill)
-                    .wrapping(text::Wrapping::WordOrGlyph),
-            )
-            .padding([5, 8])
-            .width(Length::Fill)
-            .style(move |_| markdown_quote_style(is_user))
-            .into(),
+                    .style(move |_| markdown_quote_style(is_user))
+                    .into()
+            }
             MarkdownBlock::Code(code) => widget::container(
                 widget::text(code)
                     .font(Font::MONOSPACE)
                     .size(12)
                     .width(Length::Fill)
-                    .wrapping(text::Wrapping::WordOrGlyph),
+                    .wrapping(text::Wrapping::WordOrGlyph)
+                    .selectable(),
             )
             .padding([7, 8])
             .width(Length::Fill)
@@ -8837,6 +10664,27 @@ impl TokenWorkshedApp {
             .into(),
             MarkdownBlock::Space => widget::space().height(Length::Fixed(3.0)).into(),
         }
+    }
+
+    fn markdown_inline_text<'a>(
+        &'a self,
+        content: &str,
+        size: u16,
+        is_user: bool,
+    ) -> Element<'a, Message> {
+        let link_color = Color::from_rgb8(0x1f, 0x63, 0xc5);
+        let spans = markdown_inline_spans(content, link_color);
+        iced::widget::text::Rich::with_spans(spans)
+            .size(size)
+            .width(if is_user {
+                Length::Shrink
+            } else {
+                Length::Fill
+            })
+            .wrapping(text::Wrapping::WordOrGlyph)
+            .selectable()
+            .on_link_click(Message::OpenChatLink)
+            .into()
     }
 
     fn model_row<'a>(&'a self, model: &'a str, selected: bool) -> Element<'a, Message> {
@@ -8854,7 +10702,13 @@ impl TokenWorkshedApp {
                     .size(label_size)
                     .wrapping(text::Wrapping::None),
             )
-            .push(widget::text(if active { "active" } else { "local" }).size(11))
+            .push(
+                widget::text(format!(
+                    "{} · SGLang",
+                    if active { "active" } else { "local" }
+                ))
+                .size(11),
+            )
             .spacing(4)
             .width(Length::Fill);
         let item = iced::widget::button(
@@ -8877,33 +10731,23 @@ impl TokenWorkshedApp {
     }
 
     fn runtime_checks(&self) -> Element<'_, Message> {
-        widget::column::with_capacity(4)
-            .push(self.check_line(
-                "Continuous Batching",
-                self.runtime_config.continuous_batching,
-                RuntimeBoolField::ContinuousBatching,
-            ))
-            .push(self.check_line(
-                "Paged Cache",
-                self.runtime_config.use_paged_cache,
-                RuntimeBoolField::PagedCache,
-            ))
-            .push(self.check_line(
-                "KV Cache Quantization",
-                self.runtime_config.kv_cache_quantization,
-                RuntimeBoolField::KvCacheQuantization,
-            ))
-            .push(self.check_line(
-                "MTP",
-                self.runtime_config.enable_mtp,
-                RuntimeBoolField::EnableMtp,
-            ))
-            .spacing(8)
+        widget::column::with_capacity(2)
+            .push(
+                self.soft_text(
+                    "SGLang manages continuous batching and its KV cache automatically.",
+                ),
+            )
+            .push(
+                self.soft_text(
+                    "KV cache quantization and MTP are unavailable in this Apple runtime.",
+                ),
+            )
+            .spacing(4)
             .into()
     }
 
     fn runtime_numbers(&self) -> Element<'_, Message> {
-        widget::column::with_capacity(2)
+        widget::column::with_capacity(1)
             .push(
                 self.settings_row(
                     "Chunked Prefill Tokens",
@@ -8918,54 +10762,8 @@ impl TokenWorkshedApp {
                     .into(),
                 ),
             )
-            .push(
-                self.settings_row(
-                    "MTP Draft Tokens",
-                    widget::container(self.app_text_input(
-                        "1",
-                        &self.runtime_config.mtp_draft_tokens,
-                        Some(|v| Message::RuntimeTextChanged(RuntimeTextField::MtpDraft, v)),
-                        InputField::RuntimeMtpDraft,
-                        false,
-                    ))
-                    .width(Length::Fixed(150.0))
-                    .into(),
-                ),
-            )
             .spacing(8)
             .into()
-    }
-
-    fn check_line<'a>(
-        &'a self,
-        label: &'a str,
-        value: bool,
-        field: RuntimeBoolField,
-    ) -> Element<'a, Message> {
-        iced::widget::button(
-            widget::row::with_capacity(2)
-                .push(
-                    widget::container(widget::text(""))
-                        .width(Length::Fixed(18.0))
-                        .height(Length::Fixed(18.0))
-                        .style(move |_| check_dot_style(value)),
-                )
-                .push(
-                    widget::container(widget::text(label).size(13))
-                        .width(Length::Fill)
-                        .style(|_| {
-                            container::Style::default().color(Color::from_rgb8(0x0f, 0x17, 0x2a))
-                        }),
-                )
-                .spacing(11)
-                .width(Length::Fill)
-                .align_y(Alignment::Center),
-        )
-        .padding([3, 0])
-        .width(Length::Fill)
-        .class(iced_button_class(transparent_text_button_style()))
-        .on_press(Message::RuntimeBoolChanged(field, !value))
-        .into()
     }
 
     fn concurrent_models_panel(&self) -> Element<'_, Message> {
@@ -9019,7 +10817,7 @@ impl TokenWorkshedApp {
     }
 
     fn concurrent_models_empty_panel(&self) -> Element<'_, Message> {
-        widget::container(self.soft_text("No local models."))
+        widget::container(self.soft_text("No additional models on the selected runtime."))
             .padding([8, 4])
             .style(|_| concurrent_list_style())
             .into()
@@ -9034,7 +10832,7 @@ impl TokenWorkshedApp {
             .map(job_summary)
             .unwrap_or_else(|| "No active job.".into());
         let mut body = widget::column::with_capacity(4)
-            .push(self.settings_subtitle("Deploy Job"))
+            .push(self.settings_subtitle("Community Job"))
             .push(self.soft_text_wrapped(&status));
         if !self.community_job_message.is_empty() {
             body = body.push(self.soft_text_wrapped(&self.community_job_message));
@@ -9058,8 +10856,10 @@ impl TokenWorkshedApp {
                 body = body.push(controls);
             }
         } else if self.community_job_message.is_empty() {
-            body = body
-                .push(self.empty_state("Download and deploy a model to see job progress here."));
+            body =
+                body.push(self.empty_state(
+                    "Download a model from Hugging Face to see download progress here.",
+                ));
         }
         self.aluminum_frame(
             widget::container(body.spacing(8).width(Length::Fill))
@@ -9103,6 +10903,7 @@ impl TokenWorkshedApp {
     }
 
     fn community_result_card<'a>(&'a self, item: &'a Value) -> Element<'a, Message> {
+        let palette = self.active_palette();
         let id = string_at(item, "id")
             .if_empty_then(|| string_at(item, "model_id"))
             .if_empty_then(|| string_at(item, "repo_id"));
@@ -9114,19 +10915,10 @@ impl TokenWorkshedApp {
             .unwrap_or(false);
         let quantization = string_at(item, "quantization_label");
         let model_size = string_at(item, "size_label");
-        let compatibility = if pullable {
-            "MLX ready"
-        } else if item
-            .get("mlx_ready")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            "Unsupported file format"
-        } else {
-            "No MLX build"
-        };
+        let local = item.get("local").and_then(Value::as_bool).unwrap_or(false);
+        let model_format = string_at(item, "model_format");
         let metadata = [
-            compatibility.to_string(),
+            model_format,
             model_size,
             quantization,
             format!("{downloads} downloads"),
@@ -9136,49 +10928,48 @@ impl TokenWorkshedApp {
         .filter(|value| !value.is_empty() && value != "-")
         .collect::<Vec<_>>()
         .join("  ·  ");
-        let action_width = if pullable { 76.0 } else { 112.0 };
-        let action: Element<'_, Message> = if pullable {
-            iced::widget::button(centered_text("Pull".into(), 12))
-                .padding(0)
-                .width(Length::Fixed(68.0))
-                .height(Length::Fixed(28.0))
+        let action_width = if pullable && !local { 116.0 } else { 112.0 };
+        let action: Element<'_, Message> = if pullable && !local {
+            iced::widget::button(centered_text("Download HF".into(), CONTROL_TEXT_SIZE))
+                .padding([0, 10])
+                .width(Length::Fixed(108.0))
+                .height(Length::Fixed(CONTROL_HEIGHT))
                 .class(iced_button_class(primary_button_style(self.accent())))
-                .name(format!("Pull {id}"))
-                .on_press(Message::DeployCommunityPressed(id.clone()))
+                .name(format!("Download {id} from Hugging Face for SGLang"))
+                .on_press(Message::DownloadCommunityPressed(id.clone()))
                 .into()
+        } else if local {
+            self.community_chip("Downloaded")
         } else {
             self.community_chip("Unavailable")
         };
+        let mut details = widget::column::with_capacity(3)
+            .push(
+                widget::row::with_capacity(2)
+                    .push(
+                        widget::container(widget::text("HF").size(9))
+                            .width(Length::Fixed(24.0))
+                            .height(Length::Fixed(24.0))
+                            .align_x(Alignment::Center)
+                            .align_y(Alignment::Center)
+                            .style(|_| community_logo_style()),
+                    )
+                    .push(
+                        widget::container(
+                            widget::text(id.clone())
+                                .size(13)
+                                .wrapping(text::Wrapping::WordOrGlyph),
+                        )
+                        .width(Length::Fill),
+                    )
+                    .spacing(8)
+                    .align_y(Alignment::Center)
+                    .width(Length::Fill),
+            )
+            .push(self.soft_text_wrapped(metadata));
         widget::container(
             widget::row::with_capacity(2)
-                .push(
-                    widget::column::with_capacity(2)
-                        .push(
-                            widget::row::with_capacity(2)
-                                .push(
-                                    widget::container(widget::text("HF").size(9))
-                                        .width(Length::Fixed(24.0))
-                                        .height(Length::Fixed(24.0))
-                                        .align_x(Alignment::Center)
-                                        .align_y(Alignment::Center)
-                                        .style(|_| community_logo_style()),
-                                )
-                                .push(
-                                    widget::container(
-                                        widget::text(id.clone())
-                                            .size(13)
-                                            .wrapping(text::Wrapping::WordOrGlyph),
-                                    )
-                                    .width(Length::Fill),
-                                )
-                                .spacing(8)
-                                .align_y(Alignment::Center)
-                                .width(Length::Fill),
-                        )
-                        .push(self.soft_text_wrapped(metadata))
-                        .spacing(8)
-                        .width(Length::Fill),
-                )
+                .push(details.spacing(8).width(Length::Fill))
                 .push(widget::container(action).width(Length::Fixed(action_width)))
                 .spacing(12)
                 .align_y(Alignment::Center)
@@ -9186,6 +10977,7 @@ impl TokenWorkshedApp {
         )
         .padding([10, 8])
         .width(Length::Fill)
+        .style(move |_| palette.card_style(true))
         .into()
     }
 
@@ -9239,8 +11031,8 @@ impl TokenWorkshedApp {
     }
 
     fn models_count_pill(&self, count: usize) -> Element<'_, Message> {
-        widget::container(widget::text(count.to_string()).size(11))
-            .padding([4, 9])
+        widget::container(widget::text(count.to_string()).size(12))
+            .padding([6, 10])
             .align_x(Alignment::Center)
             .align_y(Alignment::Center)
             .style(|_| models_count_style())
@@ -9256,46 +11048,26 @@ impl TokenWorkshedApp {
     }
 
     fn caligo_horizontal_rule(&self, top_edge: bool) -> Element<'static, Message> {
-        let shade = rgba(0x6f, 0x78, 0x85, SIDEBAR_ALUMINUM_SHADE_ALPHA);
-        let core = rgba(0xb9, 0xc1, 0xcb, SIDEBAR_ALUMINUM_CORE_ALPHA);
-        let highlight = rgba(0xff, 0xff, 0xff, SIDEBAR_ALUMINUM_HIGHLIGHT_ALPHA);
-        let (first, second, third) = if top_edge {
-            (highlight, core, shade)
-        } else {
-            (shade, core, highlight)
-        };
-
-        widget::column::with_capacity(3)
-            .push(caligo_horizontal_bar(first))
-            .push(caligo_horizontal_bar(second))
-            .push(caligo_horizontal_bar(third))
-            .spacing(0)
+        let _ = top_edge;
+        widget::container(widget::space())
             .width(Length::Fill)
-            .height(Length::Fixed(NUMBER_ALUMINUM_RULE_HEIGHT))
+            .height(Length::Fixed(1.0))
+            .style(|_| {
+                container::Style::default()
+                    .background(Background::Color(Color::from_rgb8(0xe2, 0xe5, 0xe9)))
+            })
             .into()
     }
 
     fn caligo_vertical_rule(&self) -> Element<'static, Message> {
-        let shade = rgba(0x6f, 0x78, 0x85, SIDEBAR_ALUMINUM_SHADE_ALPHA);
-        let core = rgba(0xb9, 0xc1, 0xcb, SIDEBAR_ALUMINUM_CORE_ALPHA);
-        let highlight = rgba(0xff, 0xff, 0xff, SIDEBAR_ALUMINUM_HIGHLIGHT_ALPHA);
-        let rail = widget::row::with_capacity(3)
-            .push(self.aluminum_sidebar_bar(shade))
-            .push(self.aluminum_sidebar_bar(core))
-            .push(self.aluminum_sidebar_bar(highlight))
-            .spacing(0)
-            .width(Length::Fixed(ALUMINUM_FRAME_WIDTH))
-            .height(Length::Fill);
-
-        widget::container(
-            widget::column::with_capacity(3)
-                .push(widget::space().height(Length::Fixed(SECTION_DIVIDER_INSET)))
-                .push(rail)
-                .push(widget::space().height(Length::Fixed(SECTION_DIVIDER_INSET))),
-        )
-        .width(Length::Fixed(ALUMINUM_FRAME_WIDTH))
-        .height(Length::Fill)
-        .into()
+        widget::container(widget::space())
+            .width(Length::Fixed(1.0))
+            .height(Length::Fill)
+            .style(|_| {
+                container::Style::default()
+                    .background(Background::Color(Color::from_rgb8(0xe2, 0xe5, 0xe9)))
+            })
+            .into()
     }
 
     fn kv_row<'a, T: ToString, U: ToString>(&'a self, label: T, value: U) -> Element<'a, Message> {
@@ -9397,9 +11169,8 @@ impl TokenWorkshedApp {
     }
 
     fn beta_tag(&self) -> Element<'_, Message> {
-        widget::container(widget::text("BETA").size(10))
-            .height(Length::Fixed(18.0))
-            .padding([0, 7])
+        widget::container(widget::text("BETA").size(12))
+            .padding([6, 10])
             .align_x(Alignment::Center)
             .align_y(Alignment::Center)
             .style(|_| beta_tag_style())
@@ -9409,10 +11180,11 @@ impl TokenWorkshedApp {
     fn community_chip<T: ToString>(&self, text: T) -> Element<'_, Message> {
         widget::container(
             widget::text(text.to_string())
-                .size(11)
+                .size(12)
                 .wrapping(text::Wrapping::WordOrGlyph),
         )
-        .padding([3, 8])
+        .padding([6, 10])
+        .height(Length::Fixed(CONTROL_HEIGHT))
         .max_width(180.0)
         .align_x(Alignment::Center)
         .align_y(Alignment::Center)
@@ -9445,8 +11217,8 @@ impl TokenWorkshedApp {
                 .align_y(Alignment::Center),
         )
         .padding(0)
-        .width(Length::Fixed(34.0))
-        .height(Length::Fixed(30.0))
+        .width(Length::Fixed(ICON_CONTROL_SIZE))
+        .height(Length::Fixed(ICON_CONTROL_SIZE))
         .class(iced_button_class(new_conversation_button_style()))
         .on_press(Message::NewConversationPressed)
         .into()
@@ -9455,7 +11227,7 @@ impl TokenWorkshedApp {
     fn soft_pill<T: ToString>(&self, text: T) -> Element<'_, Message> {
         let palette = self.active_palette();
         widget::container(widget::text(text.to_string()).size(12))
-            .padding([8, 10])
+            .padding([6, 10])
             .style(move |_| palette.card_style(false))
             .into()
     }
@@ -9498,24 +11270,25 @@ impl TokenWorkshedApp {
     fn chat_model_dropdown_panel(&self) -> Element<'_, Message> {
         let options = self.chat_model_options();
         let selected_model = self.native_state.selected_model.as_str();
-        let list =
-            if options.is_empty() {
-                widget::column::with_capacity(1).push(
-                    widget::container(self.soft_text("No local models found."))
-                        .padding([7, 8])
-                        .width(Length::Fill),
-                )
-            } else {
-                options.iter().fold(
-                    widget::column::with_capacity(options.len()),
-                    |column, model| {
-                        column.push(self.chat_model_option_button(
+        let list = if options.is_empty() {
+            widget::column::with_capacity(1).push(
+                widget::container(self.soft_text("No SGLang models on the selected runtime yet."))
+                    .padding([7, 8])
+                    .width(Length::Fill),
+            )
+        } else {
+            options.iter().fold(
+                widget::column::with_capacity(options.len()),
+                |column, model| {
+                    column.push(
+                        self.chat_model_option_button(
                             model.clone(),
                             model.as_str() == selected_model,
-                        ))
-                    },
-                )
-            };
+                        ),
+                    )
+                },
+            )
+        };
         let height = if options.is_empty() {
             38.0
         } else {
@@ -9576,7 +11349,7 @@ impl TokenWorkshedApp {
             .align_y(Alignment::Center),
         )
         .padding([6, 8])
-        .height(Length::Fixed(30.0))
+        .height(Length::Fixed(CONTROL_HEIGHT))
         .width(Length::Fill)
         .class(iced_button_class(chat_model_option_style(selected)))
         .on_press(Message::ChatModelOptionPressed(model))
@@ -9587,7 +11360,7 @@ impl TokenWorkshedApp {
         let palette = self.active_palette();
         widget::container(widget::text(text.to_string()).size(12))
             .padding([5, 9])
-            .height(Length::Fixed(30.0))
+            .height(Length::Fixed(CONTROL_HEIGHT))
             .align_y(Alignment::Center)
             .style(move |_| input_shell_style(palette, false))
             .into()
@@ -9676,7 +11449,7 @@ impl TokenWorkshedApp {
         };
         let input: Element<'a, Message> = input.into();
         widget::container(self.glass_layer(input, GlassVariant::Input, state))
-            .height(Length::Fixed(if tall { 88.0 } else { 38.0 }))
+            .height(Length::Fixed(if tall { 88.0 } else { CONTROL_HEIGHT }))
             .align_y(Alignment::Center)
             .style(move |_| input_shell_style(palette, focused))
             .into()
@@ -9790,9 +11563,9 @@ impl TokenWorkshedApp {
     }
 
     fn primary_button<T: ToString>(&self, label: T, message: Message) -> Element<'_, Message> {
-        iced::widget::button(centered_text(label.to_string(), 14))
-            .padding(0)
-            .height(Length::Fixed(38.0))
+        iced::widget::button(centered_text(label.to_string(), CONTROL_TEXT_SIZE))
+            .padding([0, 12])
+            .height(Length::Fixed(CONTROL_HEIGHT))
             .width(Length::Fill)
             .class(iced_button_class(primary_button_style(self.accent())))
             .on_press(message)
@@ -9800,9 +11573,9 @@ impl TokenWorkshedApp {
     }
 
     fn secondary_button<T: ToString>(&self, label: T, message: Message) -> Element<'_, Message> {
-        iced::widget::button(centered_text(label.to_string(), 14))
-            .padding(0)
-            .height(Length::Fixed(38.0))
+        iced::widget::button(centered_text(label.to_string(), CONTROL_TEXT_SIZE))
+            .padding([0, 12])
+            .height(Length::Fixed(CONTROL_HEIGHT))
             .width(Length::Fill)
             .class(iced_button_class(secondary_button_style(
                 self.active_palette(),
@@ -9814,9 +11587,9 @@ impl TokenWorkshedApp {
     }
 
     fn danger_button<T: ToString>(&self, label: T, message: Message) -> Element<'_, Message> {
-        iced::widget::button(centered_text(label.to_string(), 14))
-            .padding(0)
-            .height(Length::Fixed(38.0))
+        iced::widget::button(centered_text(label.to_string(), CONTROL_TEXT_SIZE))
+            .padding([0, 12])
+            .height(Length::Fixed(CONTROL_HEIGHT))
             .width(Length::Fill)
             .class(iced_button_class(danger_button_style()))
             .on_press(message)
@@ -9824,10 +11597,10 @@ impl TokenWorkshedApp {
     }
 
     fn small_button<T: ToString>(&self, label: T, message: Message) -> Element<'_, Message> {
-        iced::widget::button(centered_text(label.to_string(), 12))
-            .padding(0)
+        iced::widget::button(centered_text(label.to_string(), CONTROL_TEXT_SIZE))
+            .padding([0, 10])
             .width(Length::Fill)
-            .height(Length::Fixed(32.0))
+            .height(Length::Fixed(CONTROL_HEIGHT))
             .class(iced_button_class(secondary_button_style(
                 self.active_palette(),
                 self.accent(),
@@ -9846,18 +11619,18 @@ impl TokenWorkshedApp {
         left_width: f32,
         right_width: f32,
     ) -> Element<'_, Message> {
-        let left = iced::widget::button(centered_text(left_label.to_string(), 12))
-            .padding(0)
+        let left = iced::widget::button(centered_text(left_label.to_string(), CONTROL_TEXT_SIZE))
+            .padding([0, 10])
             .width(Length::Fill)
-            .height(Length::Fixed(32.0))
+            .height(Length::Fixed(CONTROL_HEIGHT))
             .class(iced_button_class(segmented_secondary_button_style(
                 self.active_palette(),
             )))
             .on_press(left_message);
-        let right = iced::widget::button(centered_text(right_label.to_string(), 12))
-            .padding(0)
+        let right = iced::widget::button(centered_text(right_label.to_string(), CONTROL_TEXT_SIZE))
+            .padding([0, 10])
             .width(Length::Fill)
-            .height(Length::Fixed(32.0))
+            .height(Length::Fixed(CONTROL_HEIGHT))
             .class(iced_button_class(segmented_primary_button_style(
                 self.accent(),
             )))
@@ -9867,11 +11640,11 @@ impl TokenWorkshedApp {
             widget::row::with_capacity(2)
                 .push(widget::container(left).width(Length::Fixed(left_width)))
                 .push(widget::container(right).width(Length::Fixed(right_width)))
-                .spacing(0)
-                .height(Length::Fixed(32.0)),
+                .spacing(8)
+                .height(Length::Fixed(CONTROL_HEIGHT)),
         )
         .width(Length::Fill)
-        .height(Length::Fixed(32.0))
+        .height(Length::Fixed(CONTROL_HEIGHT))
         .align_x(Alignment::End)
         .into()
     }
@@ -9885,18 +11658,18 @@ impl TokenWorkshedApp {
         left_width: f32,
         right_width: f32,
     ) -> Element<'_, Message> {
-        let left = iced::widget::button(centered_text(left_label.to_string(), 12))
-            .padding(0)
+        let left = iced::widget::button(centered_text(left_label.to_string(), CONTROL_TEXT_SIZE))
+            .padding([0, 10])
             .width(Length::Fill)
-            .height(Length::Fixed(32.0))
+            .height(Length::Fixed(CONTROL_HEIGHT))
             .class(iced_button_class(segmented_secondary_button_style(
                 self.active_palette(),
             )))
             .on_press(left_message);
-        let right = iced::widget::button(centered_text(right_label.to_string(), 12))
-            .padding(0)
+        let right = iced::widget::button(centered_text(right_label.to_string(), CONTROL_TEXT_SIZE))
+            .padding([0, 10])
             .width(Length::Fill)
-            .height(Length::Fixed(32.0))
+            .height(Length::Fixed(CONTROL_HEIGHT))
             .class(iced_button_class(segmented_danger_button_style()))
             .on_press(right_message);
 
@@ -9904,11 +11677,11 @@ impl TokenWorkshedApp {
             widget::row::with_capacity(2)
                 .push(widget::container(left).width(Length::Fixed(left_width)))
                 .push(widget::container(right).width(Length::Fixed(right_width)))
-                .spacing(0)
-                .height(Length::Fixed(32.0)),
+                .spacing(8)
+                .height(Length::Fixed(CONTROL_HEIGHT)),
         )
         .width(Length::Fill)
-        .height(Length::Fixed(32.0))
+        .height(Length::Fixed(CONTROL_HEIGHT))
         .align_x(Alignment::End)
         .into()
     }
@@ -9920,14 +11693,9 @@ impl TokenWorkshedApp {
         message: Message,
     ) -> Element<'_, Message> {
         let label = label.to_string();
-        let text = if selected {
-            format!("> {label}")
-        } else {
-            label
-        };
-        iced::widget::button(centered_text(text, 12))
-            .padding(0)
-            .height(Length::Fixed(32.0))
+        iced::widget::button(centered_text(label, CONTROL_TEXT_SIZE))
+            .padding([0, 10])
+            .height(Length::Fixed(CONTROL_HEIGHT))
             .class(iced_button_class(secondary_button_style(
                 self.active_palette(),
                 self.accent(),
@@ -9938,9 +11706,9 @@ impl TokenWorkshedApp {
     }
 
     fn disabled_toggle<T: ToString>(&self, label: T) -> Element<'_, Message> {
-        widget::container(centered_text(label.to_string(), 12))
-            .padding(0)
-            .height(Length::Fixed(32.0))
+        widget::container(centered_text(label.to_string(), CONTROL_TEXT_SIZE))
+            .padding([0, 10])
+            .height(Length::Fixed(CONTROL_HEIGHT))
             .align_x(Alignment::Center)
             .align_y(Alignment::Center)
             .style(|_| disabled_action_style())
@@ -9953,10 +11721,10 @@ impl TokenWorkshedApp {
         message: Message,
         width: f32,
     ) -> Element<'_, Message> {
-        iced::widget::button(centered_text(label.to_string(), 12))
-            .padding(0)
+        iced::widget::button(centered_text(label.to_string(), CONTROL_TEXT_SIZE))
+            .padding([0, 10])
             .width(Length::Fixed(width))
-            .height(Length::Fixed(36.0))
+            .height(Length::Fixed(CONTROL_HEIGHT))
             .class(iced_button_class(settings_select_button_style()))
             .on_press(message)
             .into()
@@ -9969,7 +11737,7 @@ impl TokenWorkshedApp {
     ) -> Element<'_, Message> {
         let label = widget::container(
             widget::text(label.to_string())
-                .size(12)
+                .size(CONTROL_TEXT_SIZE)
                 .width(Length::Fill)
                 .wrapping(text::Wrapping::WordOrGlyph),
         )
@@ -9977,7 +11745,7 @@ impl TokenWorkshedApp {
         .align_x(Alignment::Center)
         .align_y(Alignment::Center);
         iced::widget::button(label)
-            .padding([11, 8])
+            .padding([8, 12])
             .width(Length::Fill)
             .height(Length::Shrink)
             .class(iced_button_class(settings_select_button_style()))
@@ -10020,110 +11788,23 @@ impl TokenWorkshedApp {
             .into()
     }
 
-    fn agent_chip<T: ToString>(
-        &self,
-        label: T,
-        selected: bool,
-        message: Message,
-    ) -> Element<'_, Message> {
-        iced::widget::button(
-            widget::container(widget::text(label.to_string()).size(12))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .align_x(Alignment::Center)
-                .align_y(Alignment::Center),
-        )
-        .padding(0)
-        .width(Length::Fixed(86.0))
-        .height(Length::Fixed(32.0))
-        .class(iced_button_class(agent_chip_style(
-            self.active_palette(),
-            selected,
-        )))
-        .on_press(message)
-        .into()
-    }
-
-    fn agent_runtime_or_configure_group(&self) -> Element<'_, Message> {
-        if self.agent_profile_state.is_configured() {
-            return widget::container(
-                widget::row::with_capacity(2)
-                    .push(self.agent_chip(
-                        "openclaw",
-                        self.agent_mode() == "openclaw",
-                        Message::ToggleAgentRuntime("openclaw".into()),
-                    ))
-                    .push(self.agent_chip(
-                        "hermes",
-                        self.agent_mode() == "hermes",
-                        Message::ToggleAgentRuntime("hermes".into()),
-                    ))
-                    .spacing(2)
-                    .align_y(Alignment::Center),
-            )
-            .width(Length::Fixed(AGENT_RUNTIME_GROUP_WIDTH))
-            .height(Length::Fixed(AGENT_RUNTIME_GROUP_HEIGHT))
-            .padding(2)
-            .style(|_| agent_group_style())
-            .into();
-        }
-
-        let (label, fill, enabled) = match &self.agent_profile_state {
-            AgentProfileState::Configuring { progress, .. } => (
-                format!("Configuring · {progress:.0}%"),
-                agent_profile_progress_color(*progress),
-                false,
-            ),
-            AgentProfileState::Failed { .. } => (
-                "Retry configure".into(),
-                Color::from_rgb8(0x00, 0x00, 0x00),
-                true,
-            ),
-            AgentProfileState::Configured { .. } => ("Ready".into(), Color::WHITE, false),
-            _ => ("Configure".into(), Color::from_rgb8(0x00, 0x00, 0x00), true),
-        };
-        let text_color = if agent_profile_color_luminance(fill) > 0.72 {
-            Color::from_rgb8(0x11, 0x11, 0x11)
-        } else {
-            Color::WHITE
-        };
-        let button_content = widget::container(widget::text(label).size(12))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .align_x(Alignment::Center)
-            .align_y(Alignment::Center);
-        let button = iced::widget::button(button_content)
-            .padding(0)
-            .width(Length::Fixed(AGENT_RUNTIME_BUTTON_WIDTH))
-            .height(Length::Fixed(AGENT_RUNTIME_BUTTON_HEIGHT))
-            .class(iced_button_class(agent_profile_button_style(
-                fill, text_color,
-            )));
-        let button = if enabled {
-            button.on_press(Message::ConfigureAgentProfilePressed)
-        } else {
-            button
-        };
-        widget::container(button)
-            .width(Length::Fixed(AGENT_RUNTIME_GROUP_WIDTH))
-            .height(Length::Fixed(AGENT_RUNTIME_GROUP_HEIGHT))
-            .padding(2)
-            // Keep the configure control at the same footprint without adding
-            // the segmented runtime group's dark outer ring.
-            .style(|_| transparent_panel_style())
-            .into()
-    }
-
     fn send_fab(&self, message: Message) -> Element<'_, Message> {
-        let button = iced::widget::button(crate::icons::send_icon(Color::WHITE, 16.0))
-            .padding(0)
-            .width(Length::Fixed(32.0))
-            .height(Length::Fixed(32.0))
-            .class(iced_button_class(send_fab_style()));
         if self.streaming_reply.is_some() {
-            button.into()
+            iced::widget::button(widget::text("■").size(14))
+                .padding(0)
+                .width(Length::Fixed(32.0))
+                .height(Length::Fixed(32.0))
+                .class(iced_button_class(send_fab_style()))
+                .on_press(Message::StopChatPressed)
+                .into()
         } else {
-            button.on_press(message).into()
+            iced::widget::button(crate::icons::send_icon(Color::WHITE, 16.0))
+                .padding(0)
+                .width(Length::Fixed(32.0))
+                .height(Length::Fixed(32.0))
+                .class(iced_button_class(send_fab_style()))
+                .on_press(message)
+                .into()
         }
     }
 
@@ -10166,16 +11847,6 @@ impl TokenWorkshedApp {
     fn accent(&self) -> Accent {
         Accent::Black
     }
-
-    fn agent_mode(&self) -> &'static str {
-        if !self.native_state.settings.openclaw_enabled {
-            "off"
-        } else if self.native_state.settings.agent_runtime == "hermes" {
-            "hermes"
-        } else {
-            "openclaw"
-        }
-    }
 }
 
 fn wrap_app_task<Message: Send + 'static>(
@@ -10184,7 +11855,140 @@ fn wrap_app_task<Message: Send + 'static>(
     task.map(cosmic::Action::App)
 }
 
-fn normalized_agent_profile_model(value: &str) -> String {
+fn agent_transfer_preview_text(
+    transfer: &Option<Value>,
+    preview: &Value,
+    direction: &str,
+) -> String {
+    let Some(transfer) = transfer else {
+        return String::new();
+    };
+    let counts = transfer.get("counts");
+    let count = |key: &str| {
+        counts
+            .and_then(|value| value.get(key))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    };
+    let omitted = transfer.get("excluded_sensitive");
+    let omitted_memories = omitted
+        .and_then(|value| value.get("memories"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let omitted_skills = omitted
+        .and_then(|value| value.get("skills"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let source = if direction == "local-to-remote" {
+        "This Mac → RoboServer"
+    } else {
+        "RoboServer → This Mac"
+    };
+    let mut lines = vec![format!(
+        "{source} · package: {} memories, {} Skills, {} searchable chats",
+        count("memories"),
+        count("skills"),
+        count("chat_history")
+    )];
+    if omitted_memories + omitted_skills > 0 {
+        lines.push(format!(
+            "Credential-like records excluded during export: {} memories, {} Skills.",
+            omitted_memories, omitted_skills
+        ));
+    }
+    if transfer
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        lines.push(
+            "The 16 MiB transfer limit was reached; newer conversations are included first.".into(),
+        );
+    }
+    let categories = preview.get("categories").and_then(Value::as_object);
+    if let Some(categories) = categories {
+        lines.push("Destination preview:".into());
+        for (key, label) in [
+            ("memories", "Memories"),
+            ("skills", "Skills"),
+            ("chat_history", "Searchable chats"),
+        ] {
+            let Some(summary) = categories.get(key) else {
+                continue;
+            };
+            let n = |field: &str| summary.get(field).and_then(Value::as_u64).unwrap_or(0);
+            lines.push(format!(
+                "{label}: {} new, {} duplicates, {} conflicts, {} credential-like skipped, {} invalid.",
+                n("importable"), n("duplicates"), n("conflicts"), n("sensitive_skipped"), n("invalid")
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+fn transfer_import_result_text(value: &Value) -> String {
+    let imported = value.get("imported").and_then(Value::as_object);
+    let skipped = value.get("skipped").and_then(Value::as_object);
+    let mut lines = vec!["Import completed.".to_string()];
+    for (key, label) in [
+        ("memories", "Memories"),
+        ("skills", "Skills"),
+        ("chat_history", "Searchable chats"),
+    ] {
+        let count = imported
+            .and_then(|items| items.get(key))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if count > 0 {
+            lines.push(format!("{label}: {count} added."));
+        }
+        if let Some(items) = skipped.and_then(|all| all.get(key)) {
+            let duplicates = items.get("duplicates").and_then(Value::as_u64).unwrap_or(0);
+            let conflicts = items.get("conflicts").and_then(Value::as_u64).unwrap_or(0);
+            let sensitive = items.get("sensitive").and_then(Value::as_u64).unwrap_or(0);
+            if duplicates + conflicts + sensitive > 0 {
+                lines.push(format!(
+                    "{label} skipped: {duplicates} duplicates, {conflicts} conflicts, {sensitive} sensitive."
+                ));
+            }
+        }
+    }
+    lines.join("\n")
+}
+
+fn conversation_profile_for_connection(connection: &Value) -> String {
+    match string_at(connection, "mode").as_str() {
+        "remote" | "remote-disconnected" => {
+            let target = connection.get("target").unwrap_or(&Value::Null);
+            let host = string_at(target, "host");
+            let username = string_at(target, "username");
+            let port = target.get("port").and_then(Value::as_u64).unwrap_or(22);
+            if host.is_empty() {
+                "remote:unknown".into()
+            } else {
+                format!("remote:{username}@{host}:{port}")
+            }
+        }
+        _ => "local".into(),
+    }
+}
+
+fn remote_profile_for_settings(settings: &NativeSettings) -> String {
+    let host = settings.remote_server_host.trim();
+    let username = settings.remote_server_username.trim();
+    let port = settings
+        .remote_server_port
+        .trim()
+        .parse::<u16>()
+        .unwrap_or(22);
+    if host.is_empty() {
+        "remote:unknown".into()
+    } else {
+        format!("remote:{username}@{host}:{port}")
+    }
+}
+
+fn normalized_model_id(value: &str) -> String {
     let normalized = value.trim().to_ascii_lowercase();
     for prefix in ["imstudio-community/", "1mstudio-community/"] {
         if let Some(suffix) = normalized.strip_prefix(prefix) {
@@ -10194,22 +11998,19 @@ fn normalized_agent_profile_model(value: &str) -> String {
     normalized
 }
 
-fn same_agent_profile_model(left: &str, right: &str) -> bool {
-    let left = normalized_agent_profile_model(left);
-    let right = normalized_agent_profile_model(right);
-    !left.is_empty() && left == right
+fn value_flag(value: Option<&Value>) -> bool {
+    value
+        .and_then(|item| {
+            item.as_bool()
+                .or_else(|| item.as_i64().map(|number| number != 0))
+        })
+        .unwrap_or(false)
 }
 
-fn profile_has_degraded_tools(profile: &Value) -> bool {
-    ["openclaw", "hermes"].iter().any(|runtime| {
-        profile
-            .get(*runtime)
-            .and_then(Value::as_object)
-            .and_then(|section| section.get("tool_calling"))
-            .and_then(Value::as_str)
-            .map(|value| value.eq_ignore_ascii_case("degraded"))
-            .unwrap_or(false)
-    })
+fn same_model_id(left: &str, right: &str) -> bool {
+    let left = normalized_model_id(left);
+    let right = normalized_model_id(right);
+    !left.is_empty() && left == right
 }
 
 fn centered_text(label: String, size: u16) -> Element<'static, Message> {
@@ -10234,10 +12035,6 @@ fn thinking_ellipsis(started_at: Instant, now: Instant) -> String {
     }
 }
 
-fn format_thought_duration(duration: Duration) -> String {
-    format!("thought for {:.1} seconds", duration.as_secs_f64())
-}
-
 fn powder_cursor(started_at: Instant, now: Instant) -> &'static str {
     match now
         .saturating_duration_since(started_at)
@@ -10258,16 +12055,10 @@ fn take_chars(value: &str, count: usize) -> String {
 
 fn normalize_settings(settings: &mut NativeSettings) {
     if settings.server_url.trim().is_empty() {
-        settings.server_url = "http://127.0.0.1:8000".into();
+        settings.server_url = "http://127.0.0.1:8010".into();
     }
     settings.max_tokens = settings.max_tokens.clamp(1, 16_384);
     settings.temperature = settings.temperature.clamp(0.0, 2.0);
-    if settings.agent_runtime != "openclaw" && settings.agent_runtime != "hermes" {
-        settings.agent_runtime = "auto".into();
-    }
-    // Keep the legacy field readable for old state files, but tool exposure is
-    // now always automatic and no longer user-selected in the composer.
-    settings.openclaw_tool_profile = "auto".into();
     if settings.chat_dispatch_mode != "parallel" {
         settings.chat_dispatch_mode = "single".into();
     }
@@ -10298,7 +12089,12 @@ fn build_user_content(text: &str, media: &[MediaAttachment]) -> Value {
 }
 
 fn build_display_text(text: &str, media: &[MediaAttachment]) -> String {
-    let mut out = text.trim().to_string();
+    let normalized_text = text
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut out = normalized_text.trim().to_string();
     for item in media {
         if !out.is_empty() {
             out.push('\n');
@@ -10337,7 +12133,9 @@ fn parse_markdown_blocks(content: &str) -> Vec<MarkdownBlock> {
         }
 
         if trimmed.is_empty() {
-            blocks.push(MarkdownBlock::Space);
+            if !blocks.is_empty() && !matches!(blocks.last(), Some(MarkdownBlock::Space)) {
+                blocks.push(MarkdownBlock::Space);
+            }
             continue;
         }
 
@@ -10356,6 +12154,9 @@ fn parse_markdown_blocks(content: &str) -> Vec<MarkdownBlock> {
 
     if in_code || !code_lines.is_empty() {
         blocks.push(MarkdownBlock::Code(code_lines.join("\n")));
+    }
+    while matches!(blocks.last(), Some(MarkdownBlock::Space)) {
+        blocks.pop();
     }
     if blocks.is_empty() {
         blocks.push(MarkdownBlock::Paragraph("...".into()));
@@ -10411,7 +12212,116 @@ fn clean_inline_markdown(text: &str) -> String {
         out.replace_range(start..=end, &format!("{label} ({url})"));
     }
 
-    out
+    collapse_inline_whitespace(&out)
+}
+
+fn clean_inline_markdown_preserving_edge_spaces(text: &str) -> String {
+    let leading_space = text.chars().next().is_some_and(char::is_whitespace);
+    let trailing_space = text.chars().last().is_some_and(char::is_whitespace);
+    let cleaned = clean_inline_markdown(text);
+    if cleaned.is_empty() {
+        return cleaned;
+    }
+
+    format!(
+        "{}{}{}",
+        if leading_space { " " } else { "" },
+        cleaned,
+        if trailing_space { " " } else { "" },
+    )
+}
+
+fn markdown_inline_spans(
+    content: &str,
+    link_color: Color,
+) -> Vec<iced::widget::text::Span<'static, String>> {
+    use iced::widget::text::Span;
+
+    let content = collapse_inline_whitespace(content);
+    let mut spans = Vec::new();
+    let mut cursor = 0;
+
+    while let Some(open_rel) = content[cursor..].find('[') {
+        let open = cursor + open_rel;
+        let Some(label_end_rel) = content[open..].find("](") else {
+            break;
+        };
+        let label_end = open + label_end_rel;
+        let Some(url_end_rel) = content[label_end + 2..].find(')') else {
+            break;
+        };
+        let url_end = label_end + 2 + url_end_rel;
+        let url = content[label_end + 2..url_end].trim();
+        if !is_safe_web_url(url) {
+            break;
+        }
+
+        let before = clean_inline_markdown_preserving_edge_spaces(&content[cursor..open]);
+        if !before.is_empty() {
+            spans.push(Span::new(before));
+        }
+
+        let label = clean_inline_markdown_preserving_edge_spaces(&content[open + 1..label_end]);
+        if !label.is_empty() {
+            spans.push(
+                Span::new(label)
+                    .link(url.to_string())
+                    .color(link_color)
+                    .underline(true),
+            );
+        }
+        cursor = url_end + 1;
+    }
+
+    let remainder = clean_inline_markdown_preserving_edge_spaces(&content[cursor..]);
+    if !remainder.is_empty() {
+        spans.push(Span::new(remainder));
+    }
+    spans
+}
+
+fn collapse_inline_whitespace(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut pending_space = false;
+    for character in value.chars() {
+        if character.is_whitespace() {
+            pending_space = !output.is_empty();
+        } else {
+            if pending_space {
+                output.push(' ');
+                pending_space = false;
+            }
+            output.push(character);
+        }
+    }
+    output.trim().to_string()
+}
+
+fn is_safe_web_url(value: &str) -> bool {
+    let value = value.trim();
+    let rest = if value
+        .get(..8)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
+    {
+        value.get(8..)
+    } else if value
+        .get(..7)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("http://"))
+    {
+        value.get(7..)
+    } else {
+        None
+    };
+    let Some(rest) = rest else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    !authority.is_empty()
+        && !authority.starts_with('.')
+        && !authority.contains('@')
+        && authority.chars().all(|character| {
+            character.is_alphanumeric() || matches!(character, '.' | '-' | ':' | '[' | ']')
+        })
 }
 
 fn pick_media_files() -> Result<Vec<MediaAttachment>, String> {
@@ -10680,6 +12590,7 @@ fn job_summary(job: &Value) -> String {
     let status = string_at(job, "status").if_empty_then(|| "unknown".into());
     let model = string_at(job, "model");
     let message = string_at(job, "message");
+    let progress_message = string_at(job, "progress_message");
     let percent = job
         .get("progress_percent")
         .or_else(|| job.get("percent"))
@@ -10687,10 +12598,23 @@ fn job_summary(job: &Value) -> String {
         .filter(|percent| percent.is_finite())
         .unwrap_or(0.0)
         .clamp(0.0, 100.0);
-    if message.is_empty() {
-        format!("[{status}] {model} ({percent:.1}%)")
+    if !matches!(status.as_str(), "queued" | "downloading" | "paused") {
+        if message.is_empty() {
+            format!("[{status}] {model}")
+        } else {
+            format!("[{status}] {model}: {message}")
+        }
     } else {
-        format!("[{status}] {model}: {message} ({percent:.1}%)")
+        let progress = if progress_message.is_empty() {
+            format!("({percent:.1}%)")
+        } else {
+            progress_message
+        };
+        if message.is_empty() {
+            format!("[{status}] {model}: {progress}")
+        } else {
+            format!("[{status}] {model}: {message} · {progress}")
+        }
     }
 }
 
@@ -10718,7 +12642,8 @@ fn community_job_allowed_actions(job: &Value) -> &'static [&'static str] {
         .to_ascii_lowercase()
         .as_str()
     {
-        "queued" | "downloading" => &["pause", "cancel"],
+        "queued" | "downloading" => &["cancel"],
+        "verifying" => &["cancel"],
         "paused" => &["resume", "cancel"],
         "deploying" => &["cancel"],
         _ => &[],
@@ -10777,90 +12702,107 @@ fn aluminum_bar_style(color: Color) -> container::Style {
 }
 
 fn primary_button_style(
-    accent: Accent,
+    _accent: Accent,
 ) -> impl Fn(&Theme, button::Status) -> button::Style + Clone + 'static {
     move |_theme: &Theme, status| {
-        glass_button_style(
-            palette(MaterialMode::Frosted, true),
-            GlassVariant::Control,
-            state_from_status(status, false),
-            Some(accent.display_color()),
-        )
+        let (background, text_color) = match status {
+            button::Status::Hovered => (Color::from_rgb8(0x2b, 0x2b, 0x2b), Color::WHITE),
+            button::Status::Pressed => (Color::from_rgb8(0x05, 0x05, 0x05), Color::WHITE),
+            button::Status::Disabled => (
+                Color::from_rgb8(0xe7, 0xe9, 0xec),
+                Color::from_rgb8(0x8a, 0x8d, 0x92),
+            ),
+            button::Status::Active => (Color::from_rgb8(0x11, 0x11, 0x11), Color::WHITE),
+        };
+        let mut style = button::Style::default().with_background(background);
+        style.text_color = text_color;
+        style.border = Border {
+            width: 0.0,
+            radius: CONTENT_RADIUS.into(),
+            color: Color::TRANSPARENT,
+        };
+        style.shadow = Shadow::default();
+        style
     }
 }
 
 fn secondary_button_style(
-    palette: crate::appearance::Palette,
-    accent: Accent,
+    _palette: crate::appearance::Palette,
+    _accent: Accent,
     selected: bool,
 ) -> impl Fn(&Theme, button::Status) -> button::Style + Clone + 'static {
-    move |_theme: &Theme, status| {
-        glass_button_style(
-            palette,
-            GlassVariant::Control,
-            state_from_status(status, selected),
-            if selected {
-                Some(accent.display_color())
-            } else {
-                None
-            },
-        )
-    }
+    move |_theme: &Theme, status| shared_control_style(status, selected, false)
 }
 
 fn segmented_primary_button_style(
-    accent: Accent,
+    _accent: Accent,
 ) -> impl Fn(&Theme, button::Status) -> button::Style + Clone + 'static {
-    move |_theme: &Theme, status| {
-        let mut style = glass_button_style(
-            palette(MaterialMode::Frosted, true),
-            GlassVariant::Control,
-            state_from_status(status, false),
-            Some(accent.display_color()),
-        );
-        style.border.radius = [0.0, CONTENT_RADIUS, CONTENT_RADIUS, 0.0].into();
-        style
-    }
+    primary_button_style(Accent::Black)
 }
 
 fn segmented_secondary_button_style(
-    palette: crate::appearance::Palette,
+    _palette: crate::appearance::Palette,
 ) -> impl Fn(&Theme, button::Status) -> button::Style + Clone + 'static {
-    move |_theme: &Theme, status| {
-        let mut style = glass_button_style(
-            palette,
-            GlassVariant::Control,
-            state_from_status(status, false),
-            None,
-        );
-        style.border.radius = [CONTENT_RADIUS, 0.0, 0.0, CONTENT_RADIUS].into();
-        style
-    }
+    secondary_button_style(palette(MaterialMode::Frosted, true), Accent::Black, false)
 }
 
 fn danger_button_style() -> impl Fn(&Theme, button::Status) -> button::Style + Clone + 'static {
-    move |_theme: &Theme, status| {
-        glass_button_style(
-            palette(MaterialMode::Frosted, true),
-            GlassVariant::Control,
-            state_from_status(status, false),
-            Some(Color::from_rgb8(0xef, 0x44, 0x44)),
-        )
-    }
+    move |_theme: &Theme, status| shared_control_style(status, false, true)
 }
 
 fn segmented_danger_button_style()
 -> impl Fn(&Theme, button::Status) -> button::Style + Clone + 'static {
-    move |_theme: &Theme, status| {
-        let mut style = glass_button_style(
-            palette(MaterialMode::Frosted, true),
-            GlassVariant::Control,
-            state_from_status(status, false),
-            Some(Color::from_rgb8(0xef, 0x44, 0x44)),
-        );
-        style.border.radius = [0.0, CONTENT_RADIUS, CONTENT_RADIUS, 0.0].into();
-        style
-    }
+    danger_button_style()
+}
+
+fn shared_control_style(
+    status: button::Status,
+    selected: bool,
+    destructive: bool,
+) -> button::Style {
+    let (background, border, text_color) = if selected {
+        (
+            Color::from_rgb8(0xec, 0xee, 0xf1),
+            Color::from_rgb8(0xd3, 0xd6, 0xdb),
+            Color::from_rgb8(0x11, 0x11, 0x11),
+        )
+    } else {
+        match status {
+            button::Status::Hovered => (
+                Color::from_rgb8(0xf0, 0xf2, 0xf4),
+                Color::from_rgb8(0xd3, 0xd6, 0xdb),
+                Color::from_rgb8(0x11, 0x11, 0x11),
+            ),
+            button::Status::Pressed => (
+                Color::from_rgb8(0xe7, 0xea, 0xee),
+                Color::from_rgb8(0xc9, 0xcd, 0xd3),
+                Color::from_rgb8(0x11, 0x11, 0x11),
+            ),
+            button::Status::Disabled => (
+                Color::from_rgb8(0xf8, 0xfa, 0xfc),
+                Color::from_rgb8(0xe9, 0xeb, 0xee),
+                Color::from_rgb8(0x9a, 0x9c, 0xa0),
+            ),
+            button::Status::Active => (
+                Color::from_rgb8(0xf8, 0xfa, 0xfc),
+                Color::from_rgb8(0xe2, 0xe5, 0xe9),
+                Color::from_rgb8(0x11, 0x11, 0x11),
+            ),
+        }
+    };
+    let mut style = button::Style::default().with_background(background);
+    style.text_color = if destructive && !matches!(status, button::Status::Disabled) {
+        Color::from_rgb8(0xb4, 0x23, 0x18)
+    } else {
+        text_color
+    };
+    style.border = Border {
+        width: 1.0,
+        radius: CONTENT_RADIUS.into(),
+        color: border,
+    };
+    style.shadow = Shadow::default();
+    style
 }
 
 fn sidebar_active_icon_color() -> Color {
@@ -10885,7 +12827,7 @@ fn frosted_composer_style(palette: crate::appearance::Palette) -> container::Sty
     style.border = Border {
         width: 1.0,
         radius: (CONTENT_RADIUS + 2.0).into(),
-        color: Color::from_rgba(1.0, 1.0, 1.0, 0.84),
+        color: Color::from_rgb8(0xe5, 0xe7, 0xe9),
     };
     style.shadow = Shadow {
         color: Color::from_rgba(0.08, 0.12, 0.18, 0.12),
@@ -10933,40 +12875,13 @@ fn disabled_action_style() -> container::Style {
         })
 }
 
-fn agent_group_style() -> container::Style {
-    glass_container_style(
-        palette(MaterialMode::Frosted, true),
-        GlassVariant::Control,
-        GlassState::Focused,
-    )
-}
-
 fn models_box_style(palette: crate::appearance::Palette) -> container::Style {
     glass_container_style(palette, GlassVariant::Panel, GlassState::Rest)
 }
 
 fn models_count_style() -> container::Style {
     let palette = palette(MaterialMode::Frosted, false);
-    container::Style::default()
-        .background(Background::Color(palette.inset_background))
-        .color(palette.text_main)
-        .border(Border {
-            width: 1.0,
-            radius: 999.0.into(),
-            color: palette.card_border,
-        })
-}
-
-fn flat_section_style(palette: crate::appearance::Palette) -> container::Style {
-    container::Style::default()
-        .background(Background::Color(palette.window_background))
-        .color(palette.text_main)
-        .border(Border {
-            width: 0.0,
-            radius: 0.0.into(),
-            color: Color::TRANSPARENT,
-        })
-        .shadow(Shadow::default())
+    palette.card_style(false)
 }
 
 fn flat_frame_host_style(palette: crate::appearance::Palette) -> container::Style {
@@ -10979,14 +12894,6 @@ fn flat_frame_host_style(palette: crate::appearance::Palette) -> container::Styl
             color: Color::TRANSPARENT,
         })
         .shadow(Shadow::default())
-}
-
-fn caligo_horizontal_bar(color: Color) -> Element<'static, Message> {
-    widget::container(widget::text(""))
-        .width(Length::Fill)
-        .height(Length::Fixed(1.0))
-        .style(move |_| aluminum_bar_style(color))
-        .into()
 }
 
 fn model_marker_style(selected: bool) -> container::Style {
@@ -11004,20 +12911,15 @@ fn model_marker_style(selected: bool) -> container::Style {
 }
 
 fn model_item_button_style(
-    palette: crate::appearance::Palette,
+    _palette: crate::appearance::Palette,
     selected: bool,
     _active: bool,
 ) -> impl Fn(&Theme, button::Status) -> button::Style + Clone + 'static {
-    move |_theme, status| {
-        let mut style = glass_button_style(
-            palette,
-            GlassVariant::Card,
-            state_from_status(status, selected),
-            None,
-        );
-        style.text_color = palette.text_main;
-        style
-    }
+    secondary_button_style(
+        palette(MaterialMode::Frosted, true),
+        Accent::Black,
+        selected,
+    )
 }
 
 fn check_dot_style(checked: bool) -> container::Style {
@@ -11065,51 +12967,21 @@ fn model_switch_toast_style(_palette: crate::appearance::Palette) -> container::
 fn chat_model_option_style(
     selected: bool,
 ) -> impl Fn(&Theme, button::Status) -> button::Style + Clone + 'static {
-    move |_theme, status| {
-        let palette = palette(MaterialMode::Frosted, true);
-        let mut style = glass_button_style(
-            palette,
-            GlassVariant::Control,
-            state_from_status(status, selected),
-            None,
-        );
-        style.text_color = palette.text_main;
-        style
-    }
+    secondary_button_style(
+        palette(MaterialMode::Frosted, true),
+        Accent::Black,
+        selected,
+    )
 }
 
 fn community_chip_style() -> container::Style {
     let palette = palette(MaterialMode::Frosted, false);
-    container::Style::default()
-        .background(Background::Color(palette.inset_background))
-        .color(palette.text_main)
-        .border(Border {
-            width: 1.0,
-            radius: 999.0.into(),
-            color: palette.card_border,
-        })
-        .shadow(Shadow {
-            color: Color::TRANSPARENT,
-            offset: Vector::new(0.0, 0.0),
-            blur_radius: 0.0,
-        })
+    palette.card_style(false)
 }
 
 fn community_logo_style() -> container::Style {
     let palette = palette(MaterialMode::Frosted, false);
-    container::Style::default()
-        .background(Background::Color(palette.card_background_strong))
-        .color(palette.text_main)
-        .border(Border {
-            width: 1.0,
-            radius: 999.0.into(),
-            color: palette.card_border,
-        })
-        .shadow(Shadow {
-            color: Color::TRANSPARENT,
-            offset: Vector::new(0.0, 0.0),
-            blur_radius: 0.0,
-        })
+    palette.card_style(false)
 }
 
 fn terminal_console_head_style() -> container::Style {
@@ -11207,34 +13079,33 @@ fn send_fab_style() -> impl Fn(&Theme, button::Status) -> button::Style + Clone 
 }
 
 fn dashboard_row_style() -> container::Style {
-    glass_container_style(
-        palette(MaterialMode::Frosted, true),
-        GlassVariant::Subtle,
-        GlassState::Rest,
-    )
+    palette(MaterialMode::Frosted, true).card_style(false)
 }
 
 fn beta_tag_style() -> container::Style {
-    container::Style::default()
-        .background(Background::Color(Color::from_rgb8(0x11, 0x18, 0x27)))
-        .color(Color::WHITE)
-        .border(Border {
-            width: 1.0,
-            radius: 999.0.into(),
-            color: Color::from_rgba(0.07, 0.09, 0.13, 0.90),
-        })
+    let palette = palette(MaterialMode::Frosted, false);
+    palette.card_style(false)
 }
 
 fn history_item_style(active: bool) -> container::Style {
-    glass_container_style(
-        palette(MaterialMode::Frosted, true),
-        GlassVariant::Card,
-        if active {
-            GlassState::Selected
-        } else {
-            GlassState::Rest
-        },
-    )
+    let fill = if active {
+        Color::from_rgb8(0xe9, 0xea, 0xec)
+    } else {
+        Color::from_rgb8(0xf3, 0xf4, 0xf5)
+    };
+    container::Style::default()
+        .background(Background::Color(fill))
+        .color(Color::from_rgb8(0x11, 0x11, 0x11))
+        .border(Border {
+            width: 1.0,
+            radius: CONTENT_RADIUS.into(),
+            color: if active {
+                Color::from_rgb8(0xd9, 0xdc, 0xdf)
+            } else {
+                Color::from_rgb8(0xea, 0xec, 0xee)
+            },
+        })
+        .shadow(Shadow::default())
 }
 
 fn history_title_button_style() -> impl Fn(&Theme, button::Status) -> button::Style + Clone + 'static
@@ -11255,36 +13126,19 @@ fn history_title_button_style() -> impl Fn(&Theme, button::Status) -> button::St
 fn history_delete_button_style()
 -> impl Fn(&Theme, button::Status) -> button::Style + Clone + 'static {
     move |_theme, status| {
-        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-        let mut style = glass_button_style(
-            palette(MaterialMode::Frosted, true),
-            GlassVariant::Control,
-            state_from_status(status, false),
-            if hovered {
-                Some(Color::from_rgb8(0xef, 0x44, 0x44))
-            } else {
-                None
-            },
-        );
-        if !hovered {
-            style.text_color = Color::from_rgb8(0x47, 0x55, 0x69);
-        }
+        let mut style = shared_control_style(status, false, false);
+        style.text_color = if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+            Color::from_rgb8(0xb4, 0x23, 0x18)
+        } else {
+            Color::from_rgb8(0x6b, 0x6b, 0x6b)
+        };
         style
     }
 }
 
 fn new_conversation_button_style()
 -> impl Fn(&Theme, button::Status) -> button::Style + Clone + 'static {
-    move |_theme, status| {
-        let mut style = glass_button_style(
-            palette(MaterialMode::Frosted, true),
-            GlassVariant::Control,
-            state_from_status(status, false),
-            None,
-        );
-        style.text_color = Color::from_rgb8(0x11, 0x18, 0x27);
-        style
-    }
+    media_fab_style()
 }
 
 fn transparent_text_button_style()
@@ -11304,51 +13158,12 @@ fn transparent_text_button_style()
 
 fn settings_select_button_style()
 -> impl Fn(&Theme, button::Status) -> button::Style + Clone + 'static {
-    move |_theme, status| {
-        let mut style = glass_button_style(
-            palette(MaterialMode::Frosted, true),
-            GlassVariant::Control,
-            state_from_status(status, false),
-            None,
-        );
-        style.text_color = Color::from_rgb8(0x0f, 0x17, 0x2a);
-        style
-    }
+    secondary_button_style(palette(MaterialMode::Frosted, true), Accent::Black, false)
 }
 
 fn rounded_selector_button_style()
 -> impl Fn(&Theme, button::Status) -> button::Style + Clone + 'static {
-    move |_theme, status| {
-        let (background, border) = match status {
-            button::Status::Hovered => (
-                Color::from_rgb8(0xfb, 0xfc, 0xfe),
-                Color::from_rgb8(0xb7, 0xc0, 0xcc),
-            ),
-            button::Status::Pressed => (
-                Color::from_rgb8(0xf3, 0xf5, 0xf8),
-                Color::from_rgb8(0xa5, 0xaf, 0xbd),
-            ),
-            button::Status::Disabled => (
-                Color::from_rgb8(0xf8, 0xf9, 0xfb),
-                Color::from_rgb8(0xe4, 0xe7, 0xec),
-            ),
-            button::Status::Active => (Color::WHITE, Color::from_rgb8(0xdc, 0xe1, 0xe9)),
-        };
-        let mut style = button::Style::default();
-        style.background = Some(Background::Color(background));
-        style.text_color = if matches!(status, button::Status::Disabled) {
-            Color::from_rgb8(0x8b, 0x93, 0x9f)
-        } else {
-            Color::from_rgb8(0x11, 0x11, 0x11)
-        };
-        style.border = Border {
-            width: 1.0,
-            radius: CONTENT_RADIUS.into(),
-            color: border,
-        };
-        style.shadow = Shadow::default();
-        style
-    }
+    secondary_button_style(palette(MaterialMode::Frosted, true), Accent::Black, false)
 }
 
 fn temperature_slider_style(status: slider::Status) -> slider::Style {
@@ -11383,141 +13198,62 @@ fn temperature_slider_style(status: slider::Status) -> slider::Style {
     }
 }
 
-fn chat_bubble_style(is_user: bool) -> container::Style {
-    if is_user {
-        container::Style::default()
-            .background(Background::Color(Color::from_rgba(0.04, 0.04, 0.04, 0.90)))
-            .color(Color::WHITE)
-            .border(Border {
-                width: 1.0,
-                radius: 10.0.into(),
-                color: Color::from_rgba(1.0, 1.0, 1.0, 0.20),
-            })
-            .shadow(Shadow {
-                color: Color::TRANSPARENT,
-                offset: Vector::new(0.0, 0.0),
-                blur_radius: 0.0,
-            })
-    } else {
-        glass_container_style(
-            palette(MaterialMode::Frosted, true),
-            GlassVariant::Card,
-            GlassState::Rest,
-        )
+fn capture_attachment_label(attachment: &ChatImageAttachment) -> String {
+    let app = attachment.app.trim();
+    let window = attachment.window_title.trim();
+    match (app.is_empty(), window.is_empty()) {
+        (false, false) => format!("Screen capture · {app} · {window}"),
+        (false, true) => format!("Screen capture · {app}"),
+        (true, false) => format!("Screen capture · {window}"),
+        (true, true) => "Screen capture".into(),
     }
 }
 
-fn thinking_bubble_style() -> container::Style {
-    glass_container_style(
-        palette(MaterialMode::Frosted, true),
-        GlassVariant::Subtle,
-        GlassState::Focused,
-    )
-    .color(Color::from_rgb8(0x3f, 0x49, 0x59))
+fn chat_bubble_style(is_user: bool) -> container::Style {
+    let fill = if is_user {
+        Color::from_rgb8(0xee, 0xf0, 0xf2)
+    } else {
+        Color::from_rgb8(0xf4, 0xf5, 0xf6)
+    };
+    container::Style::default()
+        .background(Background::Color(fill))
+        .color(Color::from_rgb8(0x11, 0x11, 0x11))
+        .border(Border {
+            width: 1.0,
+            radius: CONTENT_RADIUS.into(),
+            color: Color::from_rgb8(0xe5, 0xe7, 0xe9),
+        })
+        .shadow(Shadow::default())
 }
 
 fn markdown_code_style(is_user: bool) -> container::Style {
     let background = if is_user {
-        Color::from_rgba(1.0, 1.0, 1.0, 0.10)
+        Color::from_rgb8(0xe3, 0xe5, 0xe7)
     } else {
-        Color::from_rgba(1.0, 1.0, 1.0, 0.58)
-    };
-    let border = if is_user {
-        Color::from_rgba(1.0, 1.0, 1.0, 0.18)
-    } else {
-        Color::from_rgba(0.67, 0.74, 0.84, 0.28)
+        Color::from_rgb8(0xea, 0xeb, 0xed)
     };
     container::Style::default()
         .background(Background::Color(background))
         .border(Border {
             width: 1.0,
-            radius: 8.0.into(),
-            color: border,
+            radius: CONTENT_RADIUS.into(),
+            color: Color::from_rgb8(0xd9, 0xdc, 0xdf),
         })
 }
 
 fn markdown_quote_style(is_user: bool) -> container::Style {
     let background = if is_user {
-        Color::from_rgba(1.0, 1.0, 1.0, 0.08)
+        Color::from_rgb8(0xe8, 0xea, 0xec)
     } else {
-        Color::from_rgba(1.0, 1.0, 1.0, 0.40)
-    };
-    let border = if is_user {
-        Color::from_rgba(1.0, 1.0, 1.0, 0.20)
-    } else {
-        Color::from_rgba(0.55, 0.62, 0.72, 0.24)
+        Color::from_rgb8(0xed, 0xee, 0xef)
     };
     container::Style::default()
         .background(Background::Color(background))
         .border(Border {
             width: 1.0,
-            radius: 8.0.into(),
-            color: border,
-        })
-}
-
-fn agent_chip_style(
-    _palette: crate::appearance::Palette,
-    selected: bool,
-) -> impl Fn(&Theme, button::Status) -> button::Style + Clone + 'static {
-    move |_theme: &Theme, status| {
-        let mut style = glass_button_style(
-            palette(MaterialMode::Frosted, true),
-            GlassVariant::Control,
-            state_from_status(status, selected),
-            None,
-        );
-        if !selected && matches!(status, button::Status::Active) {
-            style.background = Some(Background::Color(Color::TRANSPARENT));
-            style.border.color = Color::TRANSPARENT;
-            style.shadow = Shadow::default();
-            style.text_color = Color::from_rgb8(0x7b, 0x87, 0x9a);
-        } else {
-            style.text_color = Color::from_rgb8(0x11, 0x11, 0x11);
-        }
-        style
-    }
-}
-
-fn agent_profile_progress_color(progress: f32) -> Color {
-    let t = (progress / 100.0).clamp(0.0, 1.0);
-    let start = Color::from_rgb8(0x73, 0x73, 0x73);
-    Color::from_rgba(
-        start.r + (1.0 - start.r) * t,
-        start.g + (1.0 - start.g) * t,
-        start.b + (1.0 - start.b) * t,
-        1.0,
-    )
-}
-
-fn agent_profile_color_luminance(color: Color) -> f32 {
-    0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b
-}
-
-fn agent_profile_button_style(
-    fill: Color,
-    text_color: Color,
-) -> impl Fn(&Theme, button::Status) -> button::Style + Clone + 'static {
-    move |_theme: &Theme, status| {
-        let mut background = fill;
-        if matches!(status, button::Status::Hovered) {
-            background = Color::from_rgba(
-                (fill.r + 0.04).min(1.0),
-                (fill.g + 0.04).min(1.0),
-                (fill.b + 0.04).min(1.0),
-                1.0,
-            );
-        }
-        let mut style = button::Style::default().with_background(background);
-        style.text_color = text_color;
-        style.border = Border {
-            width: 0.0,
             radius: CONTENT_RADIUS.into(),
-            color: Color::TRANSPARENT,
-        };
-        style.shadow = Shadow::default();
-        style
-    }
+            color: Color::from_rgb8(0xdf, 0xe1, 0xe3),
+        })
 }
 
 fn media_fab_style() -> impl Fn(&Theme, button::Status) -> button::Style + Clone + 'static {
@@ -11604,12 +13340,12 @@ fn workshed_demo_order() -> Value {
         "blocks": [
             {"id": "root_local", "type_id": "model_development", "lane": "source", "order": 0, "params": {"model_name": ""}, "param_origins": {}, "input_bindings": {}, "locked": true},
             {"id": "load_model_demo", "type_id": "load_model", "lane": "source", "order": 1, "params": {"source_kind": "local", "ref": "", "revision": "", "trust_remote_code": false, "dtype": "auto"}, "param_origins": {}, "input_bindings": {}},
-            {"id": "quantize_demo", "type_id": "quantize_mlx", "lane": "verify", "order": 2, "params": {"preset_id": "mlx-balanced", "bits": null, "group_size": null, "mode": null, "output_name": null}, "param_origins": {}, "input_bindings": {}},
+            {"id": "benchmark_demo", "type_id": "benchmark_model", "lane": "verify", "order": 2, "params": {"warmup_runs": 1, "runs": 3, "max_new_tokens": 32, "concurrency": 1}, "param_origins": {}, "input_bindings": {}},
             {"id": "register_demo", "type_id": "register_model", "lane": "deliver", "order": 3, "params": {"model_id": null, "collision_policy": "fail", "test_when_finished": true}, "param_origins": {}, "input_bindings": {}}
         ],
         "edges": [
-            {"from": {"block_id": "load_model_demo", "port": "model", "type": "Model"}, "to": {"block_id": "quantize_demo", "port": "model", "type": "Model"}},
-            {"from": {"block_id": "quantize_demo", "port": "model", "type": "Model"}, "to": {"block_id": "register_demo", "port": "model", "type": "Model"}}
+            {"from": {"block_id": "load_model_demo", "port": "model", "type": "Model"}, "to": {"block_id": "benchmark_demo", "port": "model", "type": "Model"}},
+            {"from": {"block_id": "load_model_demo", "port": "model", "type": "Model"}, "to": {"block_id": "register_demo", "port": "model", "type": "Model"}}
         ]
     })
 }
@@ -11717,28 +13453,11 @@ fn workshed_catalog_items(
         let fallback: &[(&str, &str, &str)] = match category {
             "models" => &[("load_model", "load base model", "")],
             "data" => &[("load_dataset", "prepare dataset", "")],
-            "distill" => &[
-                (
-                    "generate_teacher_responses",
-                    "generate teacher responses",
-                    "",
-                ),
-                ("response_distill", "distill responses", ""),
-                (
-                    "logits_distill",
-                    "distill compatible logits",
-                    "Teacher/student tokenizers must match.",
-                ),
-            ],
-            "train" => &[
-                ("train_sft", "train with SFT", ""),
-                ("train_lora", "train with LoRA", ""),
-                ("train_qlora", "train with QLoRA", ""),
-                ("train_dora", "train with DoRA", ""),
-                ("train_full", "full fine-tune", ""),
-                ("train_dpo", "train with DPO", ""),
-            ],
-            "quantize" => &[("quantize_mlx", "quantize with MLX", "")],
+            "distill" => &[(
+                "generate_teacher_responses",
+                "generate teacher responses",
+                "",
+            )],
             "test_compare" => &[
                 ("evaluate_loss", "evaluate loss", ""),
                 ("evaluate_lm", "run reproducible lm-eval", ""),
@@ -11781,8 +13500,8 @@ fn workshed_add_block(order: &mut Value, capabilities: &Value, type_id: &str) {
     let definition = workshed::definition_for(capabilities, type_id);
     let preferred_lane = match definition.category.as_str() {
         "models" | "data" => "source",
-        "distill" | "train" | "control" | "logic" => "improve",
-        "quantize" | "test_compare" => "verify",
+        "distill" | "control" | "logic" => "improve",
+        "test_compare" => "verify",
         "deliver" => "deliver",
         _ => "improve",
     };
@@ -11877,6 +13596,23 @@ fn workshed_move_block(order: &mut Value, block_id: &str, direction: i8) -> bool
     true
 }
 
+fn workshed_block_is_unlocked(order: &Value, block_id: &str) -> bool {
+    order
+        .get("blocks")
+        .and_then(Value::as_array)
+        .and_then(|blocks| {
+            blocks
+                .iter()
+                .find(|block| string_at(block, "id") == block_id)
+        })
+        .is_some_and(|block| {
+            !block
+                .get("locked")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+}
+
 fn workshed_duplicate_block(order: &mut Value, block_id: &str) -> Option<String> {
     let blocks = order.get_mut("blocks")?.as_array_mut()?;
     let index = blocks
@@ -11941,7 +13677,7 @@ fn workshed_option_key(block_id: &str, field: &str) -> String {
 fn workshed_reference_placeholder(type_id: &str, source_kind: &str) -> String {
     match (type_id, source_kind) {
         ("load_model", "huggingface") => {
-            "Hugging Face model ID, for example mlx-community/Qwen3-4B".into()
+            "Hugging Face model ID, for example Qwen/Qwen3.5-2B".into()
         }
         ("load_model", "local") => "Local cached model ID or model folder".into(),
         ("load_model", "managed") => "Managed Workshed model ID".into(),
@@ -12076,7 +13812,7 @@ fn workshed_field_style() -> container::Style {
         .color(workshed_color(""))
         .border(Border {
             width: 1.0,
-            radius: 6.0.into(),
+            radius: CONTENT_RADIUS.into(),
             color: Color::from_rgba(0.07, 0.09, 0.13, 0.08),
         })
         .shadow(Shadow::default())
@@ -12088,7 +13824,7 @@ fn workshed_option_style() -> container::Style {
         .color(workshed_color(""))
         .border(Border {
             width: 1.0,
-            radius: 6.0.into(),
+            radius: CONTENT_RADIUS.into(),
             color: Color::from_rgba(0.07, 0.09, 0.13, 0.06),
         })
         .shadow(Shadow::default())
@@ -12104,7 +13840,7 @@ fn workshed_lane_style(category: &str) -> container::Style {
 fn workshed_block_style(category: &str, strong: bool) -> container::Style {
     let mut style = workshed_panel_style();
     style.background = Some(Background::Color(Color::from_rgb8(0xf9, 0xfa, 0xfc)));
-    style.border.width = if strong { 1.5 } else { 1.0 };
+    style.border.width = 1.0;
     style.border.color = if strong {
         let accent = workshed_color(category);
         Color::from_rgba(accent.r, accent.g, accent.b, 0.62)
@@ -12118,40 +13854,14 @@ fn workshed_accent_style(category: &str) -> container::Style {
     container::Style::default().background(Background::Color(workshed_color(category)))
 }
 
-fn workshed_category_stripe_style(category: &str, selected: bool) -> container::Style {
-    container::Style::default()
-        .background(Background::Color(if selected {
-            workshed_color(category)
-        } else {
-            Color::TRANSPARENT
-        }))
-        .border(Border {
-            width: 0.0,
-            radius: 2.0.into(),
-            color: Color::TRANSPARENT,
-        })
-}
-
 fn workshed_category_button_style(
     selected: bool,
 ) -> impl Fn(&Theme, button::Status) -> button::Style + Clone + 'static {
-    move |_theme, status| {
-        let background = match status {
-            button::Status::Pressed => Color::from_rgb8(0xe7, 0xeb, 0xf0),
-            button::Status::Hovered => Color::from_rgb8(0xf0, 0xf3, 0xf7),
-            _ if selected => Color::from_rgb8(0xed, 0xf1, 0xf5),
-            _ => Color::TRANSPARENT,
-        };
-        let mut style = button::Style::default().with_background(background);
-        style.text_color = Color::from_rgb8(0x11, 0x11, 0x11);
-        style.border = Border {
-            width: 0.0,
-            radius: 6.0.into(),
-            color: Color::TRANSPARENT,
-        };
-        style.shadow = Shadow::default();
-        style
-    }
+    secondary_button_style(
+        palette(MaterialMode::Frosted, true),
+        Accent::Black,
+        selected,
+    )
 }
 
 fn workshed_port_dot_style(category: &str, connected: bool) -> container::Style {
@@ -12372,13 +14082,10 @@ mod community_job_tests {
 
     #[test]
     fn community_controls_match_the_backend_job_state() {
-        assert_eq!(
-            community_job_allowed_actions(&job("queued")),
-            &["pause", "cancel"]
-        );
+        assert_eq!(community_job_allowed_actions(&job("queued")), &["cancel"]);
         assert_eq!(
             community_job_allowed_actions(&job("downloading")),
-            &["pause", "cancel"]
+            &["cancel"]
         );
         assert_eq!(
             community_job_allowed_actions(&job("paused")),
@@ -12407,8 +14114,139 @@ mod community_job_tests {
 }
 
 #[cfg(test)]
-mod agent_profile_tests {
+mod app_invariant_tests {
     use super::*;
+
+    #[test]
+    fn answer_replacement_keeps_the_visible_reply_and_ignores_empty_text() {
+        let mut stream = StreamingReplyState {
+            request_id: 1,
+            request_model: "test-model".into(),
+            run_id: "test-run".into(),
+            conversation_id: "test-conversation".into(),
+            message_index: 1,
+            received: "Searching the web".into(),
+            visible_chars: 8,
+            done: false,
+            started_at: Instant::now(),
+        };
+
+        replace_streaming_answer(&mut stream, "Here are the findings.".into());
+        assert_eq!(stream.received, "Here are the findings.");
+        assert_eq!(stream.visible_chars, 8);
+        assert_eq!(
+            take_chars(&stream.received, stream.visible_chars),
+            "Here are"
+        );
+
+        replace_streaming_answer(&mut stream, "  \n".into());
+        assert_eq!(stream.received, "Here are the findings.");
+        assert_eq!(stream.visible_chars, 8);
+    }
+
+    #[test]
+    fn streaming_delta_discards_leading_whitespace_and_caps_blank_lines() {
+        let mut stream = StreamingReplyState {
+            request_id: 1,
+            request_model: "test-model".into(),
+            run_id: "test-run".into(),
+            conversation_id: "test-conversation".into(),
+            message_index: 1,
+            received: String::new(),
+            visible_chars: 0,
+            done: false,
+            started_at: Instant::now(),
+        };
+
+        let leading_newlines = "\n".repeat(200);
+        append_streaming_delta(&mut stream, &leading_newlines);
+        append_streaming_delta(&mut stream, "Answer");
+        let trailing_newlines = "\r\n".repeat(200);
+        append_streaming_delta(&mut stream, &trailing_newlines);
+
+        assert_eq!(stream.received, "Answer\n\n");
+    }
+
+    #[test]
+    fn streamed_unicode_blank_content_cannot_expand_into_many_rows() {
+        let mut stream = StreamingReplyState {
+            request_id: 1,
+            request_model: "test-model".into(),
+            run_id: "test-run".into(),
+            conversation_id: "test-conversation".into(),
+            message_index: 1,
+            received: String::new(),
+            visible_chars: 0,
+            done: false,
+            started_at: Instant::now(),
+        };
+
+        append_streaming_delta(
+            &mut stream,
+            &"\u{2028}\u{2029}\u{0085}\u{000b}".repeat(1_000),
+        );
+        assert!(stream.received.is_empty());
+
+        append_streaming_delta(&mut stream, "Answer");
+        append_streaming_delta(&mut stream, &" \t\u{2028}\u{2029}".repeat(1_000));
+        assert!(stream.received.chars().count() < 20);
+        assert!(stream.received.matches('\n').count() <= 2);
+
+        replace_streaming_answer(
+            &mut stream,
+            format!(
+                "{}Answer{}",
+                "\u{2028}".repeat(1_000),
+                "\u{2029}".repeat(1_000)
+            ),
+        );
+        assert_eq!(stream.received, "Answer\n\n");
+    }
+
+    #[test]
+    fn markdown_links_are_restricted_to_http_schemes() {
+        assert!(is_safe_web_url("https://docs.example.com/path"));
+        assert!(!is_safe_web_url("javascript:alert(1)"));
+        assert!(!is_safe_web_url("https://user@example.com/path"));
+    }
+
+    #[test]
+    fn inline_markdown_collapses_repeated_spaces_without_changing_code_blocks() {
+        assert_eq!(
+            clean_inline_markdown("A      sentence   with   spaces"),
+            "A sentence with spaces"
+        );
+        let blocks = parse_markdown_blocks("```text\n  keep   code spacing\n```");
+        assert!(matches!(
+            blocks.first(),
+            Some(MarkdownBlock::Code(code)) if code == "  keep   code spacing"
+        ));
+    }
+
+    #[test]
+    fn chat_feed_scroll_targets_the_newest_message_edge() {
+        assert_eq!(chat_feed_scroll_end_offset().y, Some(1.0));
+    }
+
+    #[test]
+    fn markdown_collapses_long_runs_of_blank_lines() {
+        let blocks =
+            parse_markdown_blocks(&format!("{}Answer{}", "\n".repeat(200), "\n".repeat(200)));
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(
+            blocks.first(),
+            Some(MarkdownBlock::Paragraph(text)) if text == "Answer"
+        ));
+
+        let blocks = parse_markdown_blocks("First paragraph\n\n\n\nSecond paragraph");
+        assert_eq!(
+            blocks
+                .iter()
+                .filter(|block| matches!(block, MarkdownBlock::Space))
+                .count(),
+            1
+        );
+    }
 
     #[test]
     fn server_badge_stays_compact_for_chat_model_picker() {
@@ -12495,25 +14333,19 @@ mod agent_profile_tests {
     }
 
     #[test]
-    fn workshed_inspector_resolves_preset_without_losing_user_override() {
-        let capabilities = json!({"blocks": [{
-            "type_id": "quantize_mlx",
-            "default_params": {"preset_id": "balanced", "bits": null, "group_size": null},
-            "presets": [{"id": "balanced", "params": {"bits": 4, "group_size": 128}}]
-        }]});
-        let definition = workshed::definition_for(&capabilities, "quantize_mlx");
-        let mut block = json!({"id": "quant", "params": {"bits": null, "group_size": null}});
-        let defaults =
-            TokenWorkshedApp::workshed_inspector_values(&capabilities, &block, &definition);
-        assert_eq!(defaults["bits"], 4);
-        assert_eq!(defaults["group_size"], 128);
-        assert_eq!(block["params"]["bits"], Value::Null);
-
-        block["params"]["bits"] = json!(6);
-        let overridden =
-            TokenWorkshedApp::workshed_inspector_values(&capabilities, &block, &definition);
-        assert_eq!(overridden["bits"], 6);
-        assert_eq!(overridden["group_size"], 128);
+    fn workshed_drafts_only_include_active_sglang_operations() {
+        let order = workshed_demo_order();
+        let blocks = order["blocks"].as_array().unwrap();
+        assert!(
+            blocks
+                .iter()
+                .any(|block| { string_at(block, "type_id") == "benchmark_model" })
+        );
+        assert!(
+            blocks.iter().all(|block| {
+                !workshed::is_retired_work_order_block(&string_at(block, "type_id"))
+            })
+        );
     }
 
     #[test]
@@ -12579,7 +14411,6 @@ mod agent_profile_tests {
         assert!(!workshed_card_allows_quick_control("load_model"));
         assert!(!workshed_card_allows_quick_control("load_dataset"));
         assert!(workshed_card_allows_quick_control("train_lora"));
-        assert_eq!(WORKSHED_CATEGORY_STRIPE_WIDTH, 3.0);
         assert_eq!(workshed_help_color(), Color::from_rgb8(0x6b, 0x6b, 0x6b));
         assert_eq!(
             workshed_category_icon_name("models"),
@@ -12645,15 +14476,15 @@ mod agent_profile_tests {
     #[test]
     fn workshed_selection_uses_one_light_caligo_border_layer() {
         let selected = workshed_block_style("train", true);
-        assert_eq!(selected.border.width, 1.5);
+        assert_eq!(selected.border.width, 1.0);
         assert_ne!(selected.border.color, Color::from_rgb8(0x11, 0x11, 0x11));
 
         let category =
             workshed_category_button_style(true)(&Theme::default(), button::Status::Active);
-        assert_eq!(category.border.width, 0.0);
+        assert_eq!(category.border.width, 1.0);
         assert_eq!(
             category.background,
-            Some(Background::Color(Color::from_rgb8(0xed, 0xf1, 0xf5)))
+            Some(Background::Color(Color::from_rgb8(0xec, 0xee, 0xf1)))
         );
 
         let inner = workshed_block_button_style(palette(MaterialMode::Frosted, true), true)(
@@ -12662,80 +14493,5 @@ mod agent_profile_tests {
         );
         assert_eq!(inner.border.width, 0.0);
         assert_eq!(inner.border.color, Color::TRANSPARENT);
-    }
-
-    #[test]
-    fn profile_progress_interpolates_from_gray_to_white() {
-        let start = agent_profile_progress_color(0.0);
-        let midpoint = agent_profile_progress_color(50.0);
-        let complete = agent_profile_progress_color(100.0);
-
-        assert!((start.r - (0x73 as f32 / 255.0)).abs() < f32::EPSILON);
-        assert!(midpoint.r > start.r);
-        assert!(midpoint.g > start.g);
-        assert!(midpoint.b > start.b);
-        assert!((complete.r - 1.0).abs() < f32::EPSILON);
-        assert!((complete.g - 1.0).abs() < f32::EPSILON);
-        assert!((complete.b - 1.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn profile_state_only_enables_runtime_after_completion_transition() {
-        let pending = AgentProfileState::Configured {
-            profile: Value::Null,
-            completed_at: Some(Instant::now()),
-        };
-        let ready = AgentProfileState::Configured {
-            profile: Value::Null,
-            completed_at: None,
-        };
-        let configuring = AgentProfileState::Configuring {
-            job_id: "job-1".into(),
-            progress: 55.0,
-            phase: "hermes probe".into(),
-        };
-
-        assert!(pending.completion_active());
-        assert!(!pending.is_configured());
-        assert!(ready.is_configured());
-        assert!(!ready.completion_active());
-        assert!(configuring.is_configuring());
-    }
-
-    #[test]
-    fn profile_button_uses_the_runtime_groups_fixed_footprint() {
-        assert_eq!(AGENT_RUNTIME_GROUP_WIDTH, 178.0);
-        assert_eq!(AGENT_RUNTIME_GROUP_HEIGHT, 38.0);
-        assert_eq!(AGENT_RUNTIME_BUTTON_WIDTH + 4.0, AGENT_RUNTIME_GROUP_WIDTH);
-        assert_eq!(
-            AGENT_RUNTIME_BUTTON_HEIGHT + 6.0,
-            AGENT_RUNTIME_GROUP_HEIGHT
-        );
-    }
-
-    #[test]
-    fn profile_results_follow_the_current_model_across_aliases() {
-        assert!(same_agent_profile_model(
-            "lmstudio-community/Qwen3.5-2B",
-            "IMStudio-Community/qwen3.5-2b",
-        ));
-        assert!(!same_agent_profile_model("owner/one", "owner/two"));
-    }
-
-    #[test]
-    fn degraded_profile_is_marked_as_limited_tools() {
-        let profile = serde_json::json!({
-            "openclaw": {"tool_calling": "passed"},
-            "hermes": {"tool_calling": "degraded"},
-        });
-        assert!(profile_has_degraded_tools(&profile));
-    }
-
-    #[test]
-    fn thought_duration_is_compact_and_stable() {
-        assert_eq!(
-            format_thought_duration(Duration::from_millis(1530)),
-            "thought for 1.5 seconds"
-        );
     }
 }

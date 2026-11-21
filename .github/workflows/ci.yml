@@ -15,18 +15,13 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install ruff black
+      - name: Install lint tools
+        run: python -m pip install ruff
 
       - name: Run ruff
-        run: ruff check vllm_mlx/ tests/ --select E,F,W --ignore E402,E501,E731,F811,F841
-
-      - name: Run black
-        run: black --check vllm_mlx/ tests/
+        run: ruff check token_workshed_nextcore/ tests/ --select E,F,W --ignore E402,E501,E731,F811,F841
 
   type-check:
     runs-on: ubuntu-latest
@@ -36,67 +31,67 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install mypy pydantic fastapi
+      - name: Install type-check dependencies
+        run: python -m pip install mypy pydantic fastapi
 
       - name: Run mypy
-        run: mypy vllm_mlx/ --ignore-missing-imports --no-error-summary
+        run: mypy token_workshed_nextcore/ --ignore-missing-imports --no-error-summary
         continue-on-error: true
 
   test-matrix:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
 
-      - name: Install dependencies
+      - name: Install NextCore contract-test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio pytest-cov pydantic fastapi jsonschema httpx psutil transformers requests
+          pip install -e . --no-deps
+          pip install pytest pytest-asyncio pytest-cov pydantic fastapi jsonschema httpx psutil transformers requests huggingface-hub pillow numpy pyyaml gradio mcp agent-client-protocol tabulate uvicorn pytz tokenizers tqdm
 
-      - name: Run unit tests (no MLX required)
+      - name: Run SGLang-only product contract tests
         run: |
           pytest \
-            tests/test_mcp_security.py \
-            tests/test_structured_output.py \
-            tests/test_reasoning_parser.py \
-            tests/test_tool_parsers.py \
-            tests/test_streaming_json_encoder.py \
-            tests/test_native_tool_format.py \
-            tests/test_memory_cache.py \
-            tests/test_prefix_cache.py \
-            tests/test_mllm_cache.py \
+            tests/test_nextcore_agent.py \
+            tests/test_nextcore_runtime.py \
+            tests/test_roboserver_data_transfer.py \
+            tests/test_workshed_execution.py \
+            tests/test_desktop_ui_model_details.py \
+            tests/test_desktop_ui_model_integrity.py \
+            tests/test_desktop_ui_terminal.py \
+            tests/test_workshed_api_contract.py \
+            tests/test_workshed_managed_model_lifecycle.py \
             tests/test_api_models.py \
+            tests/test_streaming_tool_reasoning.py \
+            tests/test_mcp_security.py \
+            tests/test_workshed.py \
             tests/test_api_utils.py \
-            tests/test_request.py \
             tests/test_anthropic_models.py \
             tests/test_anthropic_adapter.py \
             tests/test_harmony_parsers.py \
+            tests/test_jetbrains_integration.py \
+            tests/test_token_workshed_security.py \
+            tests/test_desktop_state_concurrency.py \
             -v --tb=short \
-            -k "not Integration and not InjectJson and not TestMLXMultimodalLMCache" \
-            --cov=vllm_mlx \
+            --cov=token_workshed_nextcore \
             --cov-report=term-missing \
             --cov-report=xml
 
       - name: Upload coverage
-        if: matrix.python-version == '3.11'
+        if: always()
         uses: codecov/codecov-action@v4
         with:
           file: ./coverage.xml
           fail_ci_if_error: false
 
-  test-apple-silicon:
+  sglang-apple-silicon:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -104,49 +99,71 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
-      - name: Install project and dependencies
+      - name: Install NextCore and its Apple Silicon backend dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[vision]"
-          pip install pytest pytest-asyncio
+          python -m pip install --upgrade pip uv
+          pip install -e ".[dev,ide]"
 
-      - name: Verify Apple Silicon
+      - name: Install pinned SGLang v0.5.22 runtime
+        run: TOKEN_WORKSHED_NEXTCORE_PYTHON="$(command -v python)" scripts/install_sglang_runtime.sh
+
+      - name: Verify the pinned Apple Silicon runtime
         run: |
-          python -c "import platform; assert platform.machine() == 'arm64', 'Not ARM64'"
-          python -c "import mlx.core as mx; print(f'MLX OK: {mx.default_device()}')"
+          python - <<'PY'
+          import importlib.metadata
+          import platform
+          import sys
 
-      - name: Run MLX-dependent tests
+          assert platform.machine() == "arm64", "macos-14 must run on Apple Silicon"
+          assert tuple(map(int, platform.mac_ver()[0].split(".")[:2])) >= (14, 0)
+          assert sys.version_info[:2] == (3, 12)
+          assert importlib.metadata.version("sglang") == "0.5.22"
+          import sglang
+          import mlx.core as mx
+
+          print(f"SGLang {importlib.metadata.version('sglang')} is installed")
+          print(f"MLX backend dependency is available: {mx.default_device()}")
+          PY
+
+      - name: Run SGLang-only product contract tests
         run: |
           pytest \
-            tests/test_platform.py \
-            tests/test_llm.py \
-            tests/test_mllm.py \
-            tests/test_server.py \
-            tests/test_paged_cache.py \
-            tests/test_mllm_continuous_batching.py \
-            tests/test_mllm_cache.py \
-            tests/test_optimizations.py \
-            tests/test_simple_engine.py \
-            tests/test_batching.py \
-            tests/test_continuous_batching.py \
-            -v --tb=short \
-            -m "not slow" \
-            -k "not Integration"
+            tests/test_nextcore_agent.py \
+            tests/test_nextcore_runtime.py \
+            tests/test_roboserver_data_transfer.py \
+            tests/test_workshed_execution.py \
+            tests/test_desktop_ui_model_details.py \
+            tests/test_desktop_ui_model_integrity.py \
+            tests/test_desktop_ui_terminal.py \
+            tests/test_workshed_api_contract.py \
+            tests/test_workshed_managed_model_lifecycle.py \
+            tests/test_api_models.py \
+            tests/test_streaming_tool_reasoning.py \
+            tests/test_mcp_security.py \
+            tests/test_workshed.py \
+            tests/test_api_utils.py \
+            tests/test_anthropic_models.py \
+            tests/test_anthropic_adapter.py \
+            tests/test_harmony_parsers.py \
+            tests/test_jetbrains_integration.py \
+            tests/test_token_workshed_security.py \
+            tests/test_desktop_state_concurrency.py \
+            -v --tb=short
 
   tests:
-    needs: [test-matrix, test-apple-silicon]
+    needs: [test-matrix, sglang-apple-silicon]
     runs-on: ubuntu-latest
     if: always()
     steps:
       - name: Check test results
         run: |
           if [ "${{ needs.test-matrix.result }}" != "success" ]; then
-            echo "Unit tests failed"
+            echo "NextCore product contract tests failed"
             exit 1
           fi
-          if [ "${{ needs.test-apple-silicon.result }}" != "success" ]; then
-            echo "Apple Silicon tests failed"
+          if [ "${{ needs.sglang-apple-silicon.result }}" != "success" ]; then
+            echo "SGLang Apple Silicon contract checks failed"
             exit 1
           fi

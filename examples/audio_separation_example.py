@@ -70,7 +70,7 @@ Examples:
     print(f"Output: {args.output}")
     print()
 
-    from vllm_mlx.audio import AudioProcessor
+    from token_workshed_nextcore.audio import AudioProcessor
 
     # Load model
     print("Loading SAM-Audio model...")

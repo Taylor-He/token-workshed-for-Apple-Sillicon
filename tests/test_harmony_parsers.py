@@ -15,11 +15,11 @@ import json
 
 import pytest
 
-from vllm_mlx.api.harmony_tools import convert_tools_to_typescript
-from vllm_mlx.reasoning import get_parser
-from vllm_mlx.reasoning.harmony_parser import HarmonyReasoningParser
-from vllm_mlx.tool_parsers import ToolParserManager
-from vllm_mlx.tool_parsers.harmony_tool_parser import HarmonyToolParser
+from token_workshed_nextcore.api.harmony_tools import convert_tools_to_typescript
+from token_workshed_nextcore.reasoning import get_parser
+from token_workshed_nextcore.reasoning.harmony_parser import HarmonyReasoningParser
+from token_workshed_nextcore.tool_parsers import ToolParserManager
+from token_workshed_nextcore.tool_parsers.harmony_tool_parser import HarmonyToolParser
 
 # ============================================================================
 # Tool Parser Tests

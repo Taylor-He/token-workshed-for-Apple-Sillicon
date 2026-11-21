@@ -1,5 +1,8 @@
 # Token Workshed IDE Bridge v1
 
+> **0.2.1 historical documentation.** These instructions target the retired vLLM-MLX runtime and are not valid NextCore commands. Use [the NextCore documentation](nextcore/README.md) for current setup and capability status.
+
+
 `/api/ide/v1` is the intentionally small, desktop-local bridge for native
 Token Workshed companion surfaces. The JetBrains `0.2.0` plugin uses this
 bridge when the App is available and falls back to vllm-mlx's OpenAI-compatible

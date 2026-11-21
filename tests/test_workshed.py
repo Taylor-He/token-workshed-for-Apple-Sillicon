@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import io
 import json
-import subprocess
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -14,7 +13,7 @@ from typing import Any
 import pytest
 from jsonschema import Draft202012Validator
 
-from vllm_mlx.workshed import WorkshedService
+from token_workshed_nextcore.workshed import WorkshedService, _redact
 
 
 def _wait_for_run(service: WorkshedService, run: dict[str, Any]) -> dict[str, Any]:
@@ -24,6 +23,23 @@ def _wait_for_run(service: WorkshedService, run: dict[str, Any]) -> dict[str, An
             return current
         time.sleep(0.025)
     return service.get_run(str(run["id"])) or run
+
+
+def test_non_finite_runtime_values_are_safe_for_receipt_digests() -> None:
+    assert _redact({"loss": float("nan"), "nested": [float("inf")]}) == {
+        "loss": None,
+        "nested": [None],
+    }
+
+
+def test_redaction_keeps_token_count_parameters_and_hides_credentials() -> None:
+    assert _redact(
+        {"max_new_tokens": 12, "tokenizer": "local/tokenizer", "hf_token": "secret"}
+    ) == {
+        "max_new_tokens": 12,
+        "tokenizer": "local/tokenizer",
+        "hf_token": "[redacted]",
+    }
 
 
 def _valid_order(service: WorkshedService) -> dict:
@@ -153,17 +169,20 @@ def test_catalog_defaults_are_strict_and_dynamic_options_are_declared(tmp_path: 
     expected = {
         ("load_model", "ref"): "models.hub",
         ("load_dataset", "ref"): "datasets.hub",
-        ("quantize_mlx", "preset_id"): "quantization.presets",
         ("evaluate_lm", "tasks"): "lm_eval.tasks",
-        ("train_lora", "target_modules"): "model.target_modules",
     }
     for (type_id, field), provider in expected.items():
         definition = definitions[type_id]
         field_schema = definition["param_schema"]["properties"][field]
         assert field_schema["x-ui"]["options_provider"] == provider
         assert definition["ui_schema"]["options_providers"][field] == provider
-    assert definitions["quantize_mlx"]["param_schema"]["properties"]["preset_id"]["x-ui"]["options_context"] == {"engine": "mlx_local"}
 
+    retired = {
+        "train_sft", "train_lora", "train_qlora", "train_dora", "train_full",
+        "train_dpo", "fuse_adapter", "quantize_mlx", "response_distill",
+        "logits_distill",
+    }
+    assert retired.isdisjoint(definitions)
 
 def test_v1_work_order_migrates_aliases_bindings_origins_and_keeps_backup(tmp_path: Path) -> None:
     root_id = "root_legacy"
@@ -227,354 +246,115 @@ def test_v1_work_order_migrates_aliases_bindings_origins_and_keeps_backup(tmp_pa
     assert json.loads((tmp_path / "work-orders.v1.backup.json").read_text(encoding="utf-8")) == raw
 
 
-def test_user_override_beats_preset_even_when_client_returns_stale_origin(tmp_path: Path) -> None:
-    service = WorkshedService(root=tmp_path, runner=lambda *_args: None)
-    order = service.create_work_order({"name": "override"})
-    order["blocks"][0]["params"]["model_name"] = "override"
-    quant_definition = next(
-        item for item in service.capabilities()["blocks"] if item["type_id"] == "quantize_mlx"
-    )
-    params = deepcopy(quant_definition["default_params"])
-    params["bits"] = 6
-    order["blocks"].extend(
-        [
-            {
-                "id": "quant",
-                "type_id": "quantize_mlx",
-                "lane": "verify",
-                "order": 1,
-                "params": params,
-                "param_origins": {
-                    key: {"kind": "catalog_default", "definition_version": 2}
-                    for key in params
-                },
-                "input_bindings": {"model": {"kind": "literal", "value": "org/base"}},
-            },
-            {"id": "deliver", "type_id": "register_model", "lane": "deliver", "order": 2, "params": {}},
-        ]
-    )
-    order["edges"] = [
-        {
-            "from": {"block_id": "quant", "port": "model", "type": "Model"},
-            "to": {"block_id": "deliver", "port": "model", "type": "Model"},
-        }
-    ]
-    saved = service.update_work_order(order["id"], order, order["revision"])
-    quant = next(block for block in saved["blocks"] if block["id"] == "quant")
-    assert quant["param_origins"]["bits"]["kind"] == "user"
-    preflight = service.preflight({"work_order": saved})
-    step = next(item for item in preflight["steps"] if item["type_id"] == "quantize_mlx")
-    assert step["resolved_params"]["bits"] == 6
-    assert step["resolved_params"]["group_size"] == 128
-    assert step["param_origins"]["bits"]["kind"] == "user"
-    assert step["param_origins"]["group_size"] == {"kind": "preset", "preset_id": "mlx-balanced"}
-
-
-def test_parameter_to_runner_to_artifact_receipt_golden_path(tmp_path: Path) -> None:
-    executed: list[dict[str, Any]] = []
-
-    def runner(step: dict[str, Any], workspace: Path, cancel: Any, emit: Any) -> dict[str, Any]:
-        del cancel, emit
-        executed.append(deepcopy(step))
-        output = workspace / str(step["id"])
-        output.mkdir(parents=True, exist_ok=True)
-        (output / "config.json").write_text(json.dumps({"type": step["type_id"]}), encoding="utf-8")
-        kind = {
-            "load_dataset": "dataset",
-            "train_lora": "adapter",
-        }.get(str(step["type_id"]), "model")
-        return {
-            "id": f"workshed/{step['id']}",
-            "kind": kind,
-            "path": str(output),
-            "sha256": "runner-placeholder",
-            "bytes": 1,
-        }
-
-    service = WorkshedService(root=tmp_path, runner=runner)
-    order = service.create_work_order({"name": "golden"})
-    order["blocks"][0]["params"].update({"model_name": "golden-model", "seed": 123})
-    order["blocks"].extend(
-        [
-            {
-                "id": "model",
-                "type_id": "load_model",
-                "lane": "source",
-                "order": 1,
-                "params": {
-                    "source_kind": "huggingface",
-                    "ref": "org/base-model",
-                    "revision": "0123456789abcdef",
-                    "trust_remote_code": False,
-                    "dtype": "bfloat16",
-                },
-            },
-            {
-                "id": "data",
-                "type_id": "load_dataset",
-                "lane": "source",
-                "order": 2,
-                "params": {"source_kind": "huggingface", "ref": "org/instructions", "split": "train"},
-            },
-            {
-                "id": "train",
-                "type_id": "train_lora",
-                "lane": "improve",
-                "order": 3,
-                "params": {
-                    "preset_id": "custom",
-                    "max_steps": 7,
-                    "learning_rate": 0.0002,
-                    "lora_rank": 12,
-                    "lora_alpha": 24.0,
-                    "target_modules": ["q_proj", "v_proj"],
-                    "output_name": "golden-adapter",
-                },
-            },
-            {"id": "fuse", "type_id": "fuse_adapter", "lane": "improve", "order": 4, "params": {"output_name": "golden-fused"}},
-            {
-                "id": "quant",
-                "type_id": "quantize_mlx",
-                "lane": "verify",
-                "order": 5,
-                "params": {"preset_id": "custom", "bits": 3, "group_size": 64, "mode": "affine", "output_name": "golden-3bit"},
-            },
-            {"id": "deliver", "type_id": "register_model", "lane": "deliver", "order": 6, "params": {"model_id": "golden-final", "collision_policy": "fail"}},
-        ]
-    )
-    order["edges"] = [
-        {"from": {"block_id": "model", "port": "model", "type": "Model"}, "to": {"block_id": "train", "port": "model", "type": "Model"}},
-        {"from": {"block_id": "data", "port": "dataset", "type": "Dataset"}, "to": {"block_id": "train", "port": "dataset", "type": "Dataset"}},
-        {"from": {"block_id": "model", "port": "model", "type": "Model"}, "to": {"block_id": "fuse", "port": "model", "type": "Model"}},
-        {"from": {"block_id": "train", "port": "adapter", "type": "Adapter"}, "to": {"block_id": "fuse", "port": "adapter", "type": "Adapter"}},
-        {"from": {"block_id": "fuse", "port": "model", "type": "Model"}, "to": {"block_id": "quant", "port": "model", "type": "Model"}},
-        {"from": {"block_id": "quant", "port": "model", "type": "Model"}, "to": {"block_id": "deliver", "port": "model", "type": "Model"}},
-    ]
-    saved = service.update_work_order(order["id"], order, order["revision"])
-    preflight = service.preflight({"work_order": saved})
-    assert preflight["ok"] is True
-    assert preflight["schema_version"] == 2
-    assert preflight["run_plan"]["catalog_digest"] == preflight["catalog_digest"]
-    assert preflight["run_plan"]["plan_digest"]
-    train_plan = next(step for step in preflight["run_plan"]["steps"] if step["type_id"] == "train_lora")
-    assert train_plan["resolved_params"]["max_steps"] == 7
-    assert train_plan["resolved_params"]["seed"] == 123
-    assert train_plan["effective_params_digest"]
-    assert train_plan["execution_contract_digest"]
-    assert train_plan["runner"] == {"id": "mlx_local", "version": "2"}
-    assert train_plan["toolchains"][0]["python_executable"].endswith("/venv/bin/python")
-
-    run = service.start(
-        {
-            "preflight_id": preflight["preflight_id"],
-            "accepted_consent_ids": preflight["required_consents"],
-        }
-    )
-    run = _wait_for_run(service, run)
-    assert run["status"] == "completed", run.get("error")
-    assert [step["type_id"] for step in executed] == [
-        "load_model", "load_dataset", "train_lora", "fuse_adapter", "quantize_mlx", "register_model"
-    ]
-    train_execution = next(step for step in executed if step["type_id"] == "train_lora")
-    assert train_execution["params"]["max_steps"] == 7
-    assert train_execution["params"]["target_modules"] == ["q_proj", "v_proj"]
-    assert train_execution["params"]["seed"] == 123
-    assert set(train_execution["inputs"]) == {"model", "dataset"}
-    assert all(str(value).startswith(str(tmp_path / "artifacts")) for value in train_execution["inputs"].values())
-    quant_execution = next(step for step in executed if step["type_id"] == "quantize_mlx")
-    assert quant_execution["params"]["bits"] == 3
-    assert quant_execution["params"]["group_size"] == 64
-    assert quant_execution["input_provenance"]["model"]["artifact_id"] == "workshed/step_fuse"
-
-    final_artifact = next(item for item in service.artifacts() if item["id"] == "workshed/step_deliver")
-    provenance = final_artifact["provenance"]
-    assert final_artifact["registered"] is True
-    assert final_artifact["parent_artifact_ids"] == ["workshed/step_quant"]
-    assert provenance["effective_params"] == {
-        "model_id": "golden-final", "collision_policy": "fail", "test_when_finished": True,
-    }
-    assert provenance["param_origins"]["model_id"]["kind"] == "user"
-    assert provenance["inputs"]["model"]["artifact_id"] == "workshed/step_quant"
-    assert final_artifact["receipt_digest"]
-
-    receipt = service.run_receipt(str(run["id"]))
-    assert receipt["schema_version"] == 2
-    assert receipt["finalized"] is True
-    assert receipt["status"] == "completed"
-    assert receipt["plan_digest"] == preflight["run_plan"]["plan_digest"]
-    assert receipt["receipt_digest"]
-    receipt_train = next(step for step in receipt["steps"] if step["type_id"] == "train_lora")
-    assert receipt_train["effective_params"]["max_steps"] == 7
-    assert receipt_train["input_provenance"]["model"]["artifact_id"] == "workshed/step_model"
-    assert service.run_receipt(str(run["id"])) == receipt
-
-
-def test_builtin_quantize_uses_frozen_toolchain_python_and_explicit_argv(tmp_path: Path) -> None:
-    service = WorkshedService(root=tmp_path, python_executable="/app/python-must-not-run")
-    service._probe_mlx_runtime = lambda: {"available": True, "device": "test Metal", "reason": ""}  # type: ignore[method-assign]
-    order = service.create_work_order({"name": "argv"})
-    order["blocks"][0]["params"]["model_name"] = "argv"
-    order["blocks"].extend(
-        [
-            {
-                "id": "quant",
-                "type_id": "quantize_mlx",
-                "lane": "verify",
-                "order": 1,
-                "params": {"preset_id": "custom", "bits": 6, "group_size": 32, "mode": "affine", "output_name": "explicit"},
-                "input_bindings": {"model": {"kind": "literal", "value": "org/base"}},
-            },
-            {"id": "deliver", "type_id": "register_model", "lane": "deliver", "order": 2, "params": {}},
-        ]
-    )
-    order["edges"] = [
-        {"from": {"block_id": "quant", "port": "model", "type": "Model"}, "to": {"block_id": "deliver", "port": "model", "type": "Model"}}
-    ]
-    saved = service.update_work_order(order["id"], order, order["revision"])
-    preflight = service.preflight({"work_order": saved})
-    step = deepcopy(next(item for item in preflight["run_plan"]["steps"] if item["type_id"] == "quantize_mlx"))
-    interpreter = Path(step["toolchains"][0]["python_executable"])
-    interpreter.parent.mkdir(parents=True, exist_ok=True)
-    interpreter.write_text("synthetic", encoding="utf-8")
-    (interpreter.parents[2] / ".ready").write_text("ready", encoding="utf-8")
-    captured: list[str] = []
-
-    def fake_command(_run_id: str, command: list[str], _cwd: Path) -> None:
-        captured.extend(command)
-        output = Path(command[command.index("--mlx-path") + 1])
-        output.mkdir(parents=True, exist_ok=True)
-        (output / "config.json").write_text("{}", encoding="utf-8")
-
-    service._run_command = fake_command  # type: ignore[method-assign]
-    step["params"] = deepcopy(step["resolved_params"])
-    step["inputs"] = {"model": "org/base"}
-    artifact = service._execute_step("run", step, tmp_path / "workspace")
-    assert artifact is not None
-    assert captured[0] == str(interpreter)
-    assert captured[0] != service.python_executable
-    assert captured[captured.index("--q-bits") + 1] == "6"
-    assert captured[captured.index("--q-group-size") + 1] == "32"
-    assert captured[captured.index("--q-mode") + 1] == "affine"
-
-
-def test_preflight_blocks_mlx_work_when_app_runtime_has_no_metal(tmp_path: Path) -> None:
+def test_saved_user_model_reference_keeps_its_origin(tmp_path: Path) -> None:
     service = WorkshedService(root=tmp_path)
-    service._probe_mlx_runtime = lambda: {  # type: ignore[method-assign]
-        "available": False,
-        "device": "",
-        "reason": "No Metal device available to the app runtime.",
-    }
-    order = service.create_work_order({"name": "blocked-by-metal"})
-    order["blocks"][0]["params"]["model_name"] = "blocked-by-metal"
-    order["blocks"].extend(
-        [
-            {
-                "id": "quant",
-                "type_id": "quantize_mlx",
-                "lane": "verify",
-                "order": 1,
-                "params": {"preset_id": "mlx-balanced", "output_name": "blocked"},
-                "input_bindings": {"model": {"kind": "literal", "value": "org/base"}},
-            },
-            {
-                "id": "deliver",
-                "type_id": "register_model",
-                "lane": "deliver",
-                "order": 2,
-                "params": {"test_when_finished": False},
-            },
-        ]
+    order = _valid_order(service)
+    model = next(block for block in order["blocks"] if block["type_id"] == "load_model")
+    model["params"].pop("model", None)
+    model["params"]["ref"] = "local-user-model"
+    model["param_origins"].pop("ref", None)
+    saved = service.update_work_order(order["id"], order, order["revision"])
+    model = next(block for block in saved["blocks"] if block["type_id"] == "load_model")
+    assert model["params"]["ref"] == "local-user-model"
+    assert model["param_origins"]["ref"]["kind"] == "user"
+
+def test_legacy_training_work_order_is_viewable_but_cannot_run(tmp_path: Path) -> None:
+    calls: list[str] = []
+    service = WorkshedService(
+        root=tmp_path,
+        runner=lambda step, *_args: calls.append(step["type_id"]) or {},
     )
-    order["edges"] = [
+    order = service.create_work_order({"name": "archived training order"})
+    definition = service._definitions()["train_lora"]
+    order["blocks"].append(
         {
-            "from": {"block_id": "quant", "port": "model", "type": "Model"},
-            "to": {"block_id": "deliver", "port": "model", "type": "Model"},
+            "id": "legacy-train",
+            "type_id": "train_lora",
+            "lane": "improve",
+            "order": 1,
+            "params": deepcopy(definition["default_params"]),
+            "input_bindings": {},
         }
-    ]
+    )
     saved = service.update_work_order(order["id"], order, order["revision"])
 
+    viewed = service.get_work_order(order["id"])
+    assert viewed is not None
+    assert any(block["type_id"] == "train_lora" for block in viewed["blocks"])
     preflight = service.preflight({"work_order": saved})
-    quant_definition = next(item for item in preflight["normalized_order"]["blocks"] if item["id"] == "quant")
-
     assert preflight["ok"] is False
-    assert any(issue["code"] == "mlx_unavailable" for issue in preflight["errors"])
-    mlx_issue = next(issue for issue in preflight["errors"] if issue["code"] == "mlx_unavailable")
-    assert "No Metal device" in mlx_issue["message"]
-    assert quant_definition["type_id"] == "quantize_mlx"
+    assert any(issue["code"] == "removed_operation" for issue in preflight["errors"])
+    assert service.list_runs() == []
+    assert calls == []
 
-
-def test_preflight_rejects_an_already_quantized_mlx_model(tmp_path: Path) -> None:
+def test_retired_quantization_is_not_a_runnable_capability(tmp_path: Path) -> None:
     service = WorkshedService(root=tmp_path)
-    service._probe_mlx_runtime = lambda: {  # type: ignore[method-assign]
-        "available": True,
-        "device": "test Metal",
-        "reason": "",
-    }
-    source = tmp_path / "gemma-mlx-4bit"
-    source.mkdir()
-    (source / "config.json").write_text(
-        json.dumps({"model_type": "gemma3n", "quantization": {"bits": 4, "group_size": 64}}),
-        encoding="utf-8",
-    )
+    capabilities = service.capabilities()
+    assert "quantize_mlx" not in {block["type_id"] for block in capabilities["blocks"]}
+    assert "quantize_mlx" in service._definitions()
 
-    order = service.create_work_order({"name": "reject-requantized-source"})
-    order["blocks"][0]["params"]["model_name"] = "reject-requantized-source"
-    definitions = {
-        item["type_id"]: item for item in service.capabilities()["blocks"]
-    }
-    load_params = deepcopy(definitions["load_model"]["default_params"])
-    load_params.update({"source_kind": "local", "ref": str(source), "revision": ""})
-    quantize_params = deepcopy(definitions["quantize_mlx"]["default_params"])
-    quantize_params.update({"preset_id": "mlx-balanced", "output_name": "requantized"})
-    register_params = deepcopy(definitions["register_model"]["default_params"])
-    register_params.update({"model_id": "requantized", "test_when_finished": False})
-    order["blocks"].extend(
-        [
-            {"id": "source", "type_id": "load_model", "lane": "source", "order": 1, "params": load_params},
-            {"id": "quantize", "type_id": "quantize_mlx", "lane": "verify", "order": 2, "params": quantize_params},
-            {"id": "register", "type_id": "register_model", "lane": "deliver", "order": 3, "params": register_params},
-        ]
+def test_preflight_rejects_retired_quantization_without_starting_runner(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    service = WorkshedService(
+        root=tmp_path,
+        runner=lambda step, *_args: calls.append(step["type_id"]) or {},
     )
-    order["edges"] = [
-        {"from": {"block_id": "source", "port": "model", "type": "Model"}, "to": {"block_id": "quantize", "port": "model", "type": "Model"}},
-        {"from": {"block_id": "quantize", "port": "model", "type": "Model"}, "to": {"block_id": "register", "port": "model", "type": "Model"}},
-    ]
+    order = service.create_work_order({"name": "legacy quantization"})
+    definition = service._definitions()["quantize_mlx"]
+    order["blocks"].append(
+        {
+            "id": "legacy-quantize",
+            "type_id": "quantize_mlx",
+            "lane": "verify",
+            "order": 1,
+            "params": deepcopy(definition["default_params"]),
+            "input_bindings": {},
+        }
+    )
     saved = service.update_work_order(order["id"], order, order["revision"])
 
     preflight = service.preflight({"work_order": saved})
-
     assert preflight["ok"] is False
-    issue = next(error for error in preflight["errors"] if error["code"] == "model_already_quantized")
-    assert issue["block_id"] == "quantize"
-    assert "4-bit MLX-quantized" in issue["message"]
-    assert "original, unquantized Hugging Face weights" in issue["message"]
+    assert any(issue["code"] == "removed_operation" for issue in preflight["errors"])
+    assert service.list_runs() == []
+    assert calls == []
 
-
-def test_mlx_probe_keeps_actionable_metal_error_ahead_of_native_stack(monkeypatch, tmp_path: Path) -> None:
-    service = WorkshedService(root=tmp_path, python_executable="/tmp/fake-mlx-python")
-    output = (
-        "*** Terminating app due to uncaught exception 'NSRangeException', reason: "
-        "'*** -[__NSArray0 objectAtIndex:]: index 0 beyond bounds for empty array'\n"
-        "\t0 CoreFoundation 0x000000018fc1d7b0 __exceptionPreprocess + 176\n"
-        "\t3 libmlx.dylib _ZN3mlx4core5metal6DeviceC2Ev + 204\n"
+def test_retired_quantization_work_order_remains_available_for_review(
+    tmp_path: Path,
+) -> None:
+    service = WorkshedService(root=tmp_path)
+    order = service.create_work_order({"name": "review old quantization"})
+    definition = service._definitions()["quantize_mlx"]
+    order["blocks"].append(
+        {
+            "id": "legacy-quantize",
+            "type_id": "quantize_mlx",
+            "lane": "verify",
+            "order": 1,
+            "params": deepcopy(definition["default_params"]),
+            "input_bindings": {},
+        }
     )
-    monkeypatch.setattr(
-        "vllm_mlx.workshed.subprocess.run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(
-            args=["/tmp/fake-mlx-python"],
-            returncode=-6,
-            stdout="",
-            stderr=output,
-        ),
-    )
+    saved = service.update_work_order(order["id"], order, order["revision"])
 
-    result = service._probe_mlx_runtime()
+    viewed = service.get_work_order(order["id"])
+    assert viewed is not None
+    assert any(block["type_id"] == "quantize_mlx" for block in viewed["blocks"])
+    preflight = service.preflight({"work_order": saved})
+    assert preflight["ok"] is False
+    assert any(issue["code"] == "removed_operation" for issue in preflight["errors"])
 
-    assert result["available"] is False
-    assert "MLX aborted during Metal initialization" in result["reason"]
-    assert "__NSArray0 objectAtIndex" in result["reason"]
-    assert "CoreFoundation" not in result["reason"]
-
+def test_workbench_capabilities_identify_the_pinned_sglang_runner(
+    tmp_path: Path,
+) -> None:
+    service = WorkshedService(root=tmp_path)
+    capabilities = service.capabilities()
+    assert capabilities["runtime"]["inference_engine"] == "SGLang"
+    assert capabilities["runtime"]["sglang_version"] == "0.5.22"
+    assert capabilities["runners"][0]["id"] == "manager"
+    assert capabilities["runners"][0]["label"] == "SGLang Runtime 0.5.22"
 
 def test_register_model_smoke_uses_app_serving_runtime(tmp_path: Path, monkeypatch) -> None:
     service = WorkshedService(root=tmp_path, python_executable="/app/python")
@@ -586,13 +366,19 @@ def test_register_model_smoke_uses_app_serving_runtime(tmp_path: Path, monkeypat
         captured.append((run_id, path, cwd))
         return {
             "status": "passed",
-            "runner": "vllm_mlx.openai_chat_completions",
-            "engine": "vllm-mlx",
+            "runner": "token_workshed_nextcore.openai_chat_completions",
+            "engine": "sglang",
             "served_model": "model",
             "response_chars": 5,
             "elapsed_seconds": 1.25,
             "scope": "App serving smoke test.",
-            "argv": ["/app/python", "-m", "vllm_mlx.cli", "serve", str(model_path)],
+            "argv": [
+                "/app/python",
+                "-m",
+                "token_workshed_nextcore.cli",
+                "serve",
+                str(model_path),
+            ],
             "endpoint": "http://127.0.0.1:12345",
         }
 
@@ -607,7 +393,7 @@ def test_register_model_smoke_uses_app_serving_runtime(tmp_path: Path, monkeypat
 
     assert artifact is not None
     assert captured == [("run-id", str(model_path), tmp_path / "workspace")]
-    assert artifact["smoke_test"]["runner"] == "vllm_mlx.openai_chat_completions"
+    assert artifact["smoke_test"]["runner"] == "token_workshed_nextcore.openai_chat_completions"
     assert artifact["runner_projection"]["endpoint"] == "http://127.0.0.1:12345"
 
 
@@ -654,18 +440,18 @@ def test_serving_smoke_loads_model_and_issues_chat_completion(tmp_path: Path, mo
             payload = {"choices": [{"message": {"content": "ready"}}]}
         return FakeResponse(json.dumps(payload).encode("utf-8"))
 
-    monkeypatch.setattr("vllm_mlx.workshed.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("vllm_mlx.workshed.urllib.request.urlopen", fake_urlopen)
-    monkeypatch.setattr("vllm_mlx.workshed.os.killpg", lambda *_args: None)
+    monkeypatch.setattr("token_workshed_nextcore.workshed.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("token_workshed_nextcore.workshed.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("token_workshed_nextcore.workshed.os.killpg", lambda *_args: None)
 
     result = service._run_serving_smoke_test("run-id", str(model_path), workspace)
 
     assert result["status"] == "passed"
-    assert result["runner"] == "vllm_mlx.openai_chat_completions"
+    assert result["runner"] == "token_workshed_nextcore.openai_chat_completions"
     assert result["response_chars"] == len("ready")
     assert request_timeouts == [3, 120]
     assert "-m" in started["command"]
-    assert "vllm_mlx.cli" in started["command"]
+    assert "token_workshed_nextcore.sglang_runtime" in started["command"]
     assert started["kwargs"]["start_new_session"] is True
 
 

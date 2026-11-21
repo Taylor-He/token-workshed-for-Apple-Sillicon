@@ -7,7 +7,7 @@ This example demonstrates basic LLM inference on Apple Silicon
 using the MLX backend.
 """
 
-from vllm_mlx.models import MLXLanguageModel
+from token_workshed_nextcore.models import MLXLanguageModel
 
 
 def main():

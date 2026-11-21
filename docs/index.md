@@ -1,5 +1,8 @@
 # vLLM-MLX Documentation
 
+> **0.2.1 historical documentation.** These instructions target the retired vLLM-MLX runtime and are not valid NextCore commands. Use [the NextCore documentation](nextcore/README.md) for current setup and capability status.
+
+
 **Apple Silicon MLX Backend for vLLM** - GPU-accelerated Text, Image, Video & Audio on Mac
 
 ## What is vLLM-MLX?

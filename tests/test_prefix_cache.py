@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from vllm_mlx.prefix_cache import (
+from token_workshed_nextcore.prefix_cache import (
     CacheEntry,
     PrefixCacheManager,
     PrefixCacheStats,
@@ -283,7 +283,7 @@ class TestSchedulerIntegration:
 
     def test_request_cache_fields(self):
         """Test that Request has cache fields."""
-        from vllm_mlx.request import Request, SamplingParams
+        from token_workshed_nextcore.request import Request, SamplingParams
 
         request = Request(
             request_id="test-1",
@@ -303,7 +303,7 @@ class TestSchedulerIntegration:
 
     def test_scheduler_config_cache_options(self):
         """Test scheduler config has cache options."""
-        from vllm_mlx.scheduler import SchedulerConfig
+        from token_workshed_nextcore.scheduler import SchedulerConfig
 
         config = SchedulerConfig(
             enable_prefix_cache=True,
@@ -391,7 +391,7 @@ if __name__ == "__main__":
     async def run_cache_test():
         from mlx_lm import load
 
-        from vllm_mlx import (
+        from token_workshed_nextcore import (
             AsyncEngineCore,
             EngineConfig,
             SamplingParams,

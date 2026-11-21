@@ -1,5 +1,8 @@
 # Benchmarks
 
+> **0.2.1 historical documentation.** These instructions target the retired vLLM-MLX runtime and are not valid NextCore commands. Use [the NextCore documentation](../nextcore/README.md) for current setup and capability status.
+
+
 Performance benchmarks for vllm-mlx on Apple Silicon.
 
 ## Benchmark Types

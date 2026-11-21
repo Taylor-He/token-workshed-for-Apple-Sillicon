@@ -72,7 +72,7 @@ def main():
             print(f"  --lang {alias} -> {code}")
         return
 
-    from vllm_mlx.audio.tts import TTSEngine
+    from token_workshed_nextcore.audio.tts import TTSEngine
 
     # Resolve language alias
     lang_code = args.lang.lower()

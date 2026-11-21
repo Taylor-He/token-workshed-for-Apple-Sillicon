@@ -4,12 +4,10 @@ const WORKSHED_COMPACT_WIDTH: f32 = 640.0;
 const WORKSHED_TEXT: Color = Color::from_rgb8(0x11, 0x11, 0x11);
 const WORKSHED_MUTED_TEXT: Color = Color::from_rgb8(0x6b, 0x6b, 0x6b);
 const WORKSHED_LABEL_WIDTH: f32 = 180.0;
-const WORKSHED_BLOCK_CATEGORIES: [(&str, &str); 9] = [
+const WORKSHED_BLOCK_CATEGORIES: [(&str, &str); 7] = [
     ("models", "Models"),
     ("data", "Data"),
-    ("distill", "Distill"),
-    ("train", "Train"),
-    ("quantize", "Quantize"),
+    ("distill", "Generate"),
     ("test_compare", "Test & Compare"),
     ("control", "Control"),
     ("logic", "Logic"),
@@ -53,7 +51,7 @@ pub(super) fn render(app: &TokenWorkshedApp) -> Element<'_, Message> {
             .push(widget::text("Workshed").size(16).class(WORKSHED_TEXT))
             .push(
                 widget::text(
-                    "Create and optimize local models with a simple, configurable workflow.",
+                    "Hold and drag a block to the Delete area, then release. Releasing elsewhere cancels.",
                 )
                 .size(12)
                 .class(WORKSHED_MUTED_TEXT)
@@ -153,7 +151,67 @@ impl TokenWorkshedApp {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        let mut rows = widget::column::with_capacity(events.len().max(1)).spacing(5);
+        let steps = run
+            .and_then(|value| value.get("steps"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut rows = widget::column::with_capacity(events.len() + steps.len() + 2).spacing(5);
+        if !steps.is_empty() {
+            rows = rows.push(widget::text("Results").size(13).class(WORKSHED_TEXT));
+            for step in steps {
+                let step_id = string_at(&step, "block_id");
+                let kind = string_at(&step, "type_id");
+                let step_status = string_at(&step, "status");
+                let result = step
+                    .get("result")
+                    .filter(|value| {
+                        !value.is_null()
+                            && !value.as_object().is_some_and(|object| object.is_empty())
+                    })
+                    .map(Value::to_string)
+                    .unwrap_or_else(|| {
+                        let reason = string_at(&step, "skip_reason");
+                        if reason.is_empty() {
+                            string_at(&step, "error")
+                        } else {
+                            reason
+                        }
+                    });
+                let result = if result.chars().count() > 480 {
+                    format!("{}…", result.chars().take(480).collect::<String>())
+                } else {
+                    result
+                };
+                let summary = widget::column::with_capacity(2)
+                    .push(
+                        widget::text(format!("{step_id} · {kind} · {step_status}"))
+                            .size(11)
+                            .class(WORKSHED_MUTED_TEXT),
+                    )
+                    .push(
+                        widget::text(if result.is_empty() {
+                            "No result details recorded.".into()
+                        } else {
+                            result
+                        })
+                        .size(11)
+                        .class(WORKSHED_TEXT)
+                        .width(Length::Fill)
+                        .wrapping(text::Wrapping::WordOrGlyph),
+                    )
+                    .spacing(2)
+                    .width(Length::Fill);
+                rows = rows.push(
+                    widget::container(summary)
+                        .padding([5, 8])
+                        .width(Length::Fill)
+                        .style(|_| workshed_panel_style()),
+                );
+            }
+            rows = rows.push(self.caligo_horizontal_rule(false));
+            rows = rows.push(widget::text("Logs").size(13).class(WORKSHED_TEXT));
+        }
         if events.is_empty() {
             rows = rows.push(
                 widget::text("No output has been recorded for this run yet.")
@@ -369,9 +427,74 @@ impl TokenWorkshedApp {
         let mut stack = widget::column::with_capacity(blocks.len() * 2 + 2).spacing(0);
         stack = stack.push(self.workshed_root_block(compact));
         for (index, block) in blocks.iter().enumerate() {
+            let block_id = string_at(block, "id");
+            let is_drag_source = self.workshed_drag_source.as_deref() == Some(block_id.as_str());
+            let block_card = self.workshed_step_block(block, compact, available_width);
+            let block_card = if is_drag_source {
+                match (
+                    self.workshed_pointer_position,
+                    self.workshed_drag_pointer_origin,
+                ) {
+                    (Some((pointer_x, pointer_y)), Some((origin_x, origin_y))) => {
+                        iced::widget::float(block_card)
+                            .interactive(false)
+                            .translate(move |bounds, viewport| {
+                                let min_x = viewport.x;
+                                let min_y = viewport.y;
+                                let max_x = (viewport.x + viewport.width - bounds.width).max(min_x);
+                                let max_y =
+                                    (viewport.y + viewport.height - bounds.height).max(min_y);
+                                let x = (bounds.x + pointer_x - origin_x).clamp(min_x, max_x);
+                                let y = (bounds.y + pointer_y - origin_y).clamp(min_y, max_y);
+                                Vector::new(x - bounds.x, y - bounds.y)
+                            })
+                            .scale(1.015)
+                            .style(|_| iced::widget::float::Style {
+                                shadow: Shadow {
+                                    color: Color::from_rgba(0.05, 0.08, 0.12, 0.24),
+                                    offset: Vector::new(0.0, 6.0),
+                                    blur_radius: 18.0,
+                                },
+                                shadow_border_radius: 6.0.into(),
+                            })
+                            .into()
+                    }
+                    _ => block_card,
+                }
+            } else {
+                block_card
+            };
+            let mut layers = vec![block_card];
+            if is_drag_source {
+                let placeholder = widget::container(
+                    widget::text("Drag to delete")
+                        .size(11)
+                        .class(WORKSHED_MUTED_TEXT),
+                )
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center)
+                .style(|_| {
+                    let mut style = container::Style::default()
+                        .background(Background::Color(Color::from_rgb8(0xf4, 0xf7, 0xfb)));
+                    style.border = Border {
+                        width: 1.0,
+                        radius: 6.0.into(),
+                        color: Color::from_rgb8(0xc7, 0xcf, 0xdb),
+                    };
+                    style
+                });
+                layers.push(placeholder.into());
+            }
+            let move_block_id = block_id.clone();
+            let block_item = iced::widget::mouse_area(iced::widget::stack(layers))
+                .on_enter(Message::WorkshedBlockPointerEntered(block_id.clone()))
+                .on_move(move |_| Message::WorkshedBlockPointerEntered(move_block_id.clone()))
+                .on_exit(Message::WorkshedBlockPointerExited(block_id));
             stack = stack
                 .push(self.workshed_connector(index == 0))
-                .push(self.workshed_step_block(block, compact, available_width));
+                .push(block_item);
         }
         if blocks.is_empty() {
             stack = stack
@@ -379,14 +502,64 @@ impl TokenWorkshedApp {
                 .push(self.workshed_empty_slot());
         }
 
-        widget::scrollable(
+        let scroll: Element<'_, Message> = widget::scrollable(
             widget::container(stack)
                 .padding([0, 8, 0, 0])
                 .width(Length::Fill),
         )
         .height(Length::Fill)
         .class(theme::iced::Scrollable::Transient)
-        .into()
+        .into();
+        if self.workshed_drag_source.is_none() {
+            return scroll;
+        }
+
+        let drop_zone_active = self.workshed_delete_drop_zone_active;
+        let drop_zone_label = if drop_zone_active {
+            "Release to delete block"
+        } else {
+            "Drag here to delete"
+        };
+        let drop_zone = iced::widget::mouse_area(
+            widget::container(
+                widget::text(drop_zone_label)
+                    .size(CONTROL_TEXT_SIZE)
+                    .class(WORKSHED_TEXT),
+            )
+            .width(Length::Fill)
+            .height(Length::Fixed(58.0))
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center)
+            .style(move |_| {
+                let mut style = container::Style::default().background(Background::Color(
+                    if drop_zone_active {
+                        Color::from_rgb8(0xec, 0xee, 0xf1)
+                    } else {
+                        Color::from_rgb8(0xf8, 0xfa, 0xfc)
+                    },
+                ));
+                style.border = Border {
+                    width: 1.0,
+                    radius: CONTENT_RADIUS.into(),
+                    color: if drop_zone_active {
+                        Color::from_rgb8(0x11, 0x11, 0x11)
+                    } else {
+                        Color::from_rgb8(0xe2, 0xe5, 0xe9)
+                    },
+                };
+                style
+            }),
+        )
+        .on_enter(Message::WorkshedDeleteDropZoneEntered)
+        .on_move(|_| Message::WorkshedDeleteDropZoneEntered)
+        .on_exit(Message::WorkshedDeleteDropZoneExited);
+        widget::column::with_capacity(2)
+            .push(scroll)
+            .push(drop_zone)
+            .spacing(8)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
     }
 
     fn workshed_root_block(&self, compact: bool) -> Element<'_, Message> {
@@ -431,12 +604,70 @@ impl TokenWorkshedApp {
         compact: bool,
         available_width: f32,
     ) -> Element<'_, Message> {
+        let type_id = string_at(block, "type_id");
+        if workshed::is_retired_work_order_block(&type_id) {
+            return self.workshed_retired_block(block, compact);
+        }
         match string_at(block, "type_id").as_str() {
             "load_model" => self.workshed_load_model_block(block, compact, available_width),
-            "quantize_mlx" => self.workshed_quantize_block(block, compact),
             "register_model" => self.workshed_register_block(block, compact),
             _ => self.workshed_generic_block(block, compact),
         }
+    }
+
+    fn workshed_retired_block(&self, block: &Value, compact: bool) -> Element<'_, Message> {
+        let type_id = string_at(block, "type_id");
+        let definition = workshed::definition_for(&self.workshed_capabilities, &type_id);
+        let summary = workshed::summary_parts(block, &definition, usize::MAX).join(" · ");
+        let title = widget::row::with_capacity(2)
+            .push(self.workshed_icon(&definition.category))
+            .push(
+                widget::text(format!("{} · Retired", definition.label))
+                    .size(13)
+                    .class(WORKSHED_TEXT)
+                    .width(Length::Fill)
+                    .wrapping(text::Wrapping::WordOrGlyph),
+            )
+            .spacing(10)
+            .align_y(Alignment::Center);
+        let mut detail = widget::column::with_capacity(2)
+            .push(
+                widget::text(
+                    "This saved block is view-only. Its operation was removed and preflight will reject the work order.",
+                )
+                .size(11)
+                .class(WORKSHED_MUTED_TEXT)
+                .width(Length::Fill)
+                .wrapping(text::Wrapping::WordOrGlyph),
+            )
+            .spacing(6)
+            .width(Length::Fill);
+        if !summary.is_empty() {
+            detail = detail.push(
+                widget::text(summary)
+                    .size(11)
+                    .class(WORKSHED_MUTED_TEXT)
+                    .width(Length::Fill)
+                    .wrapping(text::Wrapping::WordOrGlyph),
+            );
+        }
+        let content: Element<'_, Message> = if compact {
+            widget::column::with_capacity(2)
+                .push(title)
+                .push(detail)
+                .spacing(8)
+                .width(Length::Fill)
+                .into()
+        } else {
+            widget::row::with_capacity(2)
+                .push(widget::container(title).width(Length::Fixed(WORKSHED_LABEL_WIDTH)))
+                .push(detail)
+                .spacing(8)
+                .align_y(Alignment::Start)
+                .width(Length::Fill)
+                .into()
+        };
+        self.workshed_surface(content, "block", None)
     }
 
     fn workshed_surface<'a>(
@@ -638,198 +869,6 @@ impl TokenWorkshedApp {
         choices.width(Length::Fill).into()
     }
 
-    fn workshed_quantize_block(&self, block: &Value, compact: bool) -> Element<'_, Message> {
-        let block_id = string_at(block, "id");
-        let definition = workshed::definition_for(&self.workshed_capabilities, "quantize_mlx");
-        let params = workshed::effective_params(block, &definition);
-        let preset_id = params
-            .get("preset_id")
-            .and_then(Value::as_str)
-            .unwrap_or("mlx-balanced");
-        let bits = self.workshed_effective_quant_bits(block, &definition, preset_id);
-        let bits_picker: Element<'_, Message> = if let Some(field) =
-            workshed::field(&definition, "bits")
-        {
-            if let ParamKind::Enum(choices) = &field.kind {
-                let entries = choices
-                    .iter()
-                    .filter_map(|choice| {
-                        choice
-                            .value
-                            .as_i64()
-                            .map(|n| (format!("{n}-bit"), choice.value.clone()))
-                    })
-                    .collect::<Vec<_>>();
-                let options = entries
-                    .iter()
-                    .map(|(label, _)| label.clone())
-                    .collect::<Vec<_>>();
-                let selected = entries
-                    .iter()
-                    .find(|(_, value)| value.as_i64() == Some(bits))
-                    .map(|(label, _)| label.clone());
-                let id = block_id.clone();
-                let picker = iced::widget::pick_list(options, selected, move |label: String| {
-                    let value = entries
-                        .iter()
-                        .find(|(candidate, _)| candidate == &label)
-                        .map(|(_, value)| value.clone())
-                        .unwrap_or(Value::Null);
-                    Message::WorkshedParamSet {
-                        block_id: id.clone(),
-                        field: "bits".into(),
-                        value,
-                    }
-                })
-                .padding([7, 9])
-                .text_size(13)
-                .width(Length::Fill);
-                widget::container(picker)
-                    .width(Length::FillPortion(4))
-                    .style(|_| workshed_control_style())
-                    .into()
-            } else {
-                self.workshed_dropdown_button(
-                    &format!("{bits}-bit"),
-                    Message::WorkshedBlockSelectPressed(block_id.clone()),
-                    130.0,
-                )
-            }
-        } else {
-            self.workshed_dropdown_button(
-                &format!("{bits}-bit"),
-                Message::WorkshedBlockSelectPressed(block_id.clone()),
-                130.0,
-            )
-        };
-        let controls = widget::row::with_capacity(3)
-            .push(bits_picker)
-            .push(self.workshed_preset_picker(block, &definition, preset_id))
-            .push(self.workshed_settings_button(block_id.clone()))
-            .spacing(10)
-            .align_y(Alignment::Center)
-            .width(Length::Fill);
-        let detail = widget::column::with_capacity(2)
-            .push(controls)
-            .push(
-                widget::text("MLX · This Mac")
-                    .size(12)
-                    .class(WORKSHED_MUTED_TEXT),
-            )
-            .spacing(6)
-            .width(Length::Fill);
-        let title = self.workshed_block_title("Quantize", "quantize", block_id);
-        let content: Element<'_, Message> = if compact {
-            widget::column::with_capacity(2)
-                .push(title)
-                .push(detail)
-                .spacing(8)
-                .width(Length::Fill)
-                .into()
-        } else {
-            widget::row::with_capacity(2)
-                .push(widget::container(title).width(Length::Fixed(WORKSHED_LABEL_WIDTH)))
-                .push(detail)
-                .spacing(8)
-                .align_y(Alignment::Start)
-                .width(Length::Fill)
-                .into()
-        };
-        self.workshed_surface(content, "block", None)
-    }
-
-    fn workshed_settings_button(&self, block_id: String) -> Element<'_, Message> {
-        iced::widget::button(
-            widget::container(workshed_icon("preferences-system-symbolic", 15))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .align_x(Alignment::Center)
-                .align_y(Alignment::Center),
-        )
-        .padding(0)
-        .width(Length::Fixed(32.0))
-        .height(Length::Fixed(32.0))
-        .class(iced_button_class(rounded_selector_button_style()))
-        .name("Open block settings")
-        .on_press(Message::WorkshedBlockSelectPressed(block_id))
-        .into()
-    }
-
-    fn workshed_effective_quant_bits(
-        &self,
-        block: &Value,
-        definition: &BlockDefinition,
-        preset_id: &str,
-    ) -> i64 {
-        let params = workshed::effective_params(block, definition);
-        if let Some(bits) = params.get("bits").and_then(Value::as_i64) {
-            return bits;
-        }
-        self.workshed_raw_presets(&definition.type_id)
-            .and_then(|presets| {
-                presets
-                    .into_iter()
-                    .find(|preset| string_at(preset, "id") == preset_id)
-            })
-            .and_then(|preset| {
-                preset
-                    .get("params")
-                    .and_then(|params| params.get("bits"))
-                    .and_then(Value::as_i64)
-            })
-            .unwrap_or(4)
-    }
-
-    fn workshed_preset_picker(
-        &self,
-        block: &Value,
-        definition: &BlockDefinition,
-        selected: &str,
-    ) -> Element<'_, Message> {
-        let presets = self
-            .workshed_raw_presets(&definition.type_id)
-            .unwrap_or_default();
-        let entries = presets
-            .iter()
-            .map(|preset| (string_at(preset, "label"), string_at(preset, "id")))
-            .filter(|(label, id)| !label.is_empty() && !id.is_empty())
-            .collect::<Vec<_>>();
-        if entries.is_empty() {
-            return widget::text("No compatible presets").size(12).into();
-        }
-        let options = entries
-            .iter()
-            .map(|(label, _)| label.clone())
-            .collect::<Vec<_>>();
-        let selected_label = entries
-            .iter()
-            .find(|(_, id)| id == selected)
-            .map(|(label, _)| label.clone());
-        let selection = entries;
-        let block_id = string_at(block, "id");
-        let picker = iced::widget::pick_list(options, selected_label, move |label: String| {
-            let value = selection
-                .iter()
-                .find(|(candidate, _)| candidate == &label)
-                .map(|(_, id)| id.clone())
-                .unwrap_or_default();
-            Message::WorkshedParamSet {
-                block_id: block_id.clone(),
-                field: "preset_id".into(),
-                value: Value::String(value),
-            }
-        })
-        .placeholder("Preset")
-        .padding([7, 9])
-        .text_size(13)
-        .text_wrap(text::Wrapping::WordOrGlyph)
-        .width(Length::Fill);
-        widget::container(picker)
-            .width(Length::FillPortion(5))
-            .style(|_| workshed_control_style())
-            .into()
-    }
-
     fn workshed_register_block(&self, block: &Value, compact: bool) -> Element<'_, Message> {
         let block_id = string_at(block, "id");
         let definition = workshed::definition_for(&self.workshed_capabilities, "register_model");
@@ -1014,8 +1053,9 @@ impl TokenWorkshedApp {
     }
 
     fn workshed_link_button(&self, label: &str, message: Message) -> Element<'_, Message> {
-        iced::widget::button(widget::text(label.to_string()).size(12))
-            .padding([4, 6])
+        iced::widget::button(widget::text(label.to_string()).size(CONTROL_TEXT_SIZE))
+            .padding([0, 10])
+            .height(Length::Fixed(CONTROL_HEIGHT))
             .class(iced_button_class(secondary_button_style(
                 self.active_palette(),
                 Accent::Black,
@@ -1179,32 +1219,13 @@ impl TokenWorkshedApp {
     }
 
     fn workshed_run_label(&self) -> String {
-        let blocks = self
-            .workshed_order
-            .get("blocks")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let has_quantize = blocks
-            .iter()
-            .any(|block| string_at(block, "type_id") == "quantize_mlx");
-        let has_other_work = blocks.iter().any(|block| {
-            !matches!(
-                string_at(block, "type_id").as_str(),
-                "model_development" | "load_model" | "quantize_mlx" | "register_model"
-            )
-        });
-        if has_quantize && !has_other_work {
-            "Run quantization".into()
-        } else {
-            "Run work order".into()
-        }
+        "Run work order".into()
     }
 
     fn workshed_compact_button(&self, label: &str, message: Message) -> Element<'_, Message> {
-        iced::widget::button(widget::text(label.to_string()).size(12))
+        iced::widget::button(widget::text(label.to_string()).size(CONTROL_TEXT_SIZE))
             .padding([6, 10])
-            .height(Length::Fixed(34.0))
+            .height(Length::Fixed(CONTROL_HEIGHT))
             .class(iced_button_class(secondary_button_style(
                 self.active_palette(),
                 Accent::Black,

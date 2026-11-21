@@ -1,5 +1,8 @@
 # MCP & Tool Calling
 
+> **0.2.1 historical documentation.** These instructions target the retired vLLM-MLX runtime and are not valid NextCore commands. Use [the NextCore documentation](../nextcore/README.md) for current setup and capability status.
+
+
 vllm-mlx supports the Model Context Protocol (MCP) for integrating external tools with LLMs.
 
 ## How Tool Calling Works
@@ -294,7 +297,7 @@ For development only, you can bypass security validation:
 To add custom commands to the whitelist programmatically:
 
 ```python
-from vllm_mlx.mcp import MCPCommandValidator, set_validator
+from token_workshed_nextcore.mcp import MCPCommandValidator, set_validator
 
 # Add custom commands
 validator = MCPCommandValidator(
@@ -334,7 +337,7 @@ Tools matching these patterns trigger security warnings:
 ### Custom Sandbox Configuration
 
 ```python
-from vllm_mlx.mcp import ToolSandbox, set_sandbox
+from token_workshed_nextcore.mcp import ToolSandbox, set_sandbox
 
 # Create sandbox with custom settings
 sandbox = ToolSandbox(
@@ -356,7 +359,7 @@ set_sandbox(sandbox)
 ### Accessing Audit Logs
 
 ```python
-from vllm_mlx.mcp import get_sandbox
+from token_workshed_nextcore.mcp import get_sandbox
 
 sandbox = get_sandbox()
 

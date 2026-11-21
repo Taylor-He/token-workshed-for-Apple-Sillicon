@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from vllm_mlx.quant_worker import create_quant_worker_app
-from vllm_mlx.quantization import QuantizationService
+from token_workshed_nextcore.quant_worker import create_quant_worker_app
+from token_workshed_nextcore.quantization import QuantizationService
 
 
 def _service(tmp_path: Path) -> QuantizationService:
@@ -62,7 +62,7 @@ def test_local_converter_receives_a_nonexistent_output_path(tmp_path: Path, monk
         (destination / "model.safetensors").write_bytes(b"weights")
         return CompletedProcess()
 
-    monkeypatch.setattr("vllm_mlx.quantization.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("token_workshed_nextcore.quantization.subprocess.Popen", fake_popen)
 
     service._run_local(job_id, request)
 

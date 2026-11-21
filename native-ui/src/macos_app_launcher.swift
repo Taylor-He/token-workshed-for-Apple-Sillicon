@@ -11,7 +11,7 @@ final class AppLauncherDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard let executable = arguments.first else {
-            NSLog("token-workshed launcher did not receive an executable path.")
+            NSLog("token-workshed NextCore launcher did not receive an executable path.")
             NSApplication.shared.terminate(nil)
             return
         }
@@ -35,7 +35,7 @@ final class AppLauncherDelegate: NSObject, NSApplicationDelegate {
             try process.run()
         } catch {
             runnerProcess = nil
-            NSLog("Could not start token-workshed: %@", error.localizedDescription)
+            NSLog("Could not start token-workshed NextCore: %@", error.localizedDescription)
             NSApplication.shared.terminate(nil)
         }
     }

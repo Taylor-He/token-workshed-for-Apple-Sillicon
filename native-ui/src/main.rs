@@ -61,9 +61,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 impl AppFlags {
     fn from_env() -> Self {
-        let mut api_base = "http://127.0.0.1:7862".to_string();
-        let mut server_url = "http://127.0.0.1:8000".to_string();
+        let mut api_base = "http://127.0.0.1:7872".to_string();
+        let mut server_url = "http://127.0.0.1:8010".to_string();
         let mut manager_token = String::new();
+        let agent_token = std::env::var("TOKEN_WORKSHED_AGENT_UI_TOKEN").unwrap_or_default();
         let mut initial_page = Page::Chat;
         let mut ide_companion = false;
 
@@ -99,6 +100,7 @@ impl AppFlags {
             api_base,
             server_url,
             manager_token,
+            agent_token,
             initial_page,
             ide_companion,
         }

@@ -8,17 +8,14 @@ _spec_file = globals().get("__file__", "")
 ROOT_DIR = Path(_spec_file).resolve().parent if _spec_file else Path.cwd().resolve()
 datas = []
 hiddenimports = []
-datas += collect_data_files('vllm_mlx')
-datas += collect_data_files('mlx')
-datas += collect_data_files('mlx_vlm')
+datas += collect_data_files('token_workshed_nextcore')
 datas = [
     item for item in datas
     if 'ui_css_svg' not in Path(item[0]).parts
 ]
-hiddenimports += collect_submodules('vllm_mlx')
-hiddenimports += collect_submodules('mlx')
-hiddenimports += collect_submodules('mlx_lm')
-hiddenimports += collect_submodules('mlx_vlm')
+hiddenimports += collect_submodules('token_workshed_nextcore')
+# SGLang and its backend dependencies live in the dedicated runtime venv. The
+# desktop bundle must not package an independent MLX-LM inference path.
 native_ui_binary = ROOT_DIR / 'native-ui' / 'target' / 'release' / 'token-workshed-native-ui'
 if not native_ui_binary.exists():
     raise SystemExit(
@@ -48,7 +45,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='token-workshed',
+    name='nextcore',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -67,11 +64,16 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='token-workshed',
+    name='nextcore',
 )
 app = BUNDLE(
     coll,
-    name='token-workshed.app',
+    name='nextcore.app',
     icon=None,
-    bundle_identifier=None,
+    bundle_identifier='com.taylorhe.tokenworkshed.nextcore',
+    info_plist={
+        'CFBundleName': 'token-workshed NextCore',
+        'CFBundleDisplayName': 'token-workshed NextCore',
+        'LSMinimumSystemVersion': '14.0',
+    },
 )

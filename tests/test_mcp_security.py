@@ -8,14 +8,14 @@ command injection attacks and other security vulnerabilities.
 
 import re
 import pytest
-from vllm_mlx.mcp.security import (
+from token_workshed_nextcore.mcp.security import (
     MCPCommandValidator,
     MCPSecurityError,
     ALLOWED_COMMANDS,
     ToolSandbox,
     ToolExecutionAudit,
 )
-from vllm_mlx.mcp.types import MCPServerConfig, MCPTransport
+from token_workshed_nextcore.mcp.types import MCPServerConfig, MCPTransport
 
 
 class TestMCPCommandValidator:

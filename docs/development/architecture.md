@@ -1,5 +1,8 @@
 # Architecture
 
+> **0.2.1 historical documentation.** These instructions target the retired vLLM-MLX runtime and are not valid NextCore commands. Use [the NextCore documentation](../nextcore/README.md) for current setup and capability status.
+
+
 ## System Overview
 
 ```
@@ -111,7 +114,7 @@ Request Completion                    Cache Storage
 ## Module Structure
 
 ```
-vllm_mlx/
+token_workshed_nextcore/
 ├── api/
 │   ├── models.py         # Pydantic models
 │   ├── utils.py          # Shared utilities
@@ -168,7 +171,7 @@ vllm-mlx auto-detects Apple Silicon:
 - GPU cores
 
 ```python
-from vllm_mlx.hardware import get_hardware_info
+from token_workshed_nextcore.hardware import get_hardware_info
 
 hw = get_hardware_info()
 print(f"{hw.chip_name} ({hw.total_memory_gb:.0f} GB)")

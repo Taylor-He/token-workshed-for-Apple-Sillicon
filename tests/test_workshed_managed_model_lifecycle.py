@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx.desktop_ui import LocalModelServerManager, _CombinedManagedModelResolver
-from vllm_mlx.workshed import WorkshedService
+from token_workshed_nextcore.desktop_ui import LocalModelServerManager, _WorkshedModelResolver
+from token_workshed_nextcore.workshed import WorkshedService
 
 
 def _managed_store(tmp_path: Path) -> tuple[WorkshedService, str, str, Path]:
@@ -31,9 +31,8 @@ def _managed_store(tmp_path: Path) -> tuple[WorkshedService, str, str, Path]:
 
 def _manager(monkeypatch, service: WorkshedService) -> LocalModelServerManager:
     monkeypatch.setattr("huggingface_hub.scan_cache_dir", lambda: SimpleNamespace(repos=[]))
-    quantization = SimpleNamespace(managed_model_ids=lambda: [], resolve_model=lambda _id: None)
     manager = LocalModelServerManager("python", "127.0.0.1", 8000)
-    manager.set_managed_model_resolver(_CombinedManagedModelResolver(quantization, service))
+    manager.set_managed_model_resolver(_WorkshedModelResolver(service))
     return manager
 
 

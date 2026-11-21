@@ -57,7 +57,7 @@ class TestMLLMBatchRequest:
 
     def test_create_request(self):
         """Test creating a basic request."""
-        from vllm_mlx.mllm_batch_generator import MLLMBatchRequest
+        from token_workshed_nextcore.mllm_batch_generator import MLLMBatchRequest
 
         req = MLLMBatchRequest(
             uid=0,
@@ -77,7 +77,7 @@ class TestMLLMBatchRequest:
 
     def test_request_defaults(self):
         """Test default values."""
-        from vllm_mlx.mllm_batch_generator import MLLMBatchRequest
+        from token_workshed_nextcore.mllm_batch_generator import MLLMBatchRequest
 
         req = MLLMBatchRequest(
             uid=1,
@@ -98,7 +98,7 @@ class TestMLLMBatchResponse:
 
     def test_create_response(self):
         """Test creating a response."""
-        from vllm_mlx.mllm_batch_generator import MLLMBatchResponse
+        from token_workshed_nextcore.mllm_batch_generator import MLLMBatchResponse
 
         logprobs = mx.array([0.1, 0.2, 0.3])
 
@@ -117,7 +117,7 @@ class TestMLLMBatchResponse:
 
     def test_finished_response(self):
         """Test response with finish reason."""
-        from vllm_mlx.mllm_batch_generator import MLLMBatchResponse
+        from token_workshed_nextcore.mllm_batch_generator import MLLMBatchResponse
 
         resp = MLLMBatchResponse(
             uid=0,
@@ -135,7 +135,7 @@ class TestMLLMBatch:
 
     def test_batch_length(self):
         """Test batch length calculation."""
-        from vllm_mlx.mllm_batch_generator import MLLMBatch, MLLMBatchRequest
+        from token_workshed_nextcore.mllm_batch_generator import MLLMBatch, MLLMBatchRequest
 
         requests = [
             MLLMBatchRequest(uid=i, request_id=f"req-{i}", prompt=f"prompt {i}")
@@ -157,7 +157,7 @@ class TestMLLMBatch:
 
     def test_batch_filter(self):
         """Test filtering a batch."""
-        from vllm_mlx.mllm_batch_generator import MLLMBatch, MLLMBatchRequest
+        from token_workshed_nextcore.mllm_batch_generator import MLLMBatch, MLLMBatchRequest
 
         requests = [
             MLLMBatchRequest(uid=i, request_id=f"req-{i}", prompt=f"prompt {i}")
@@ -193,7 +193,7 @@ class TestMLLMBatchStats:
 
     def test_stats_initialization(self):
         """Test stats initialization."""
-        from vllm_mlx.mllm_batch_generator import MLLMBatchStats
+        from token_workshed_nextcore.mllm_batch_generator import MLLMBatchStats
 
         stats = MLLMBatchStats()
 
@@ -205,7 +205,7 @@ class TestMLLMBatchStats:
 
     def test_tps_calculation(self):
         """Test tokens per second calculation."""
-        from vllm_mlx.mllm_batch_generator import MLLMBatchStats
+        from token_workshed_nextcore.mllm_batch_generator import MLLMBatchStats
 
         stats = MLLMBatchStats()
         stats.prompt_tokens = 100
@@ -218,7 +218,7 @@ class TestMLLMBatchStats:
 
     def test_tps_zero_time(self):
         """Test TPS with zero time."""
-        from vllm_mlx.mllm_batch_generator import MLLMBatchStats
+        from token_workshed_nextcore.mllm_batch_generator import MLLMBatchStats
 
         stats = MLLMBatchStats()
 
@@ -231,7 +231,7 @@ class TestMLLMSchedulerConfig:
 
     def test_default_config(self):
         """Test default configuration."""
-        from vllm_mlx.mllm_scheduler import MLLMSchedulerConfig
+        from token_workshed_nextcore.mllm_scheduler import MLLMSchedulerConfig
 
         config = MLLMSchedulerConfig()
 
@@ -244,7 +244,7 @@ class TestMLLMSchedulerConfig:
 
     def test_custom_config(self):
         """Test custom configuration."""
-        from vllm_mlx.mllm_scheduler import MLLMSchedulerConfig
+        from token_workshed_nextcore.mllm_scheduler import MLLMSchedulerConfig
 
         config = MLLMSchedulerConfig(
             max_num_seqs=8,
@@ -264,8 +264,8 @@ class TestMLLMRequest:
 
     def test_create_request(self):
         """Test creating an MLLM request."""
-        from vllm_mlx.mllm_scheduler import MLLMRequest
-        from vllm_mlx.request import RequestStatus
+        from token_workshed_nextcore.mllm_scheduler import MLLMRequest
+        from token_workshed_nextcore.request import RequestStatus
 
         req = MLLMRequest(
             request_id="req-1",
@@ -285,7 +285,7 @@ class TestMLLMSchedulerOutput:
 
     def test_empty_output(self):
         """Test empty scheduler output."""
-        from vllm_mlx.mllm_scheduler import MLLMSchedulerOutput
+        from token_workshed_nextcore.mllm_scheduler import MLLMSchedulerOutput
 
         output = MLLMSchedulerOutput()
 
@@ -301,7 +301,7 @@ class TestMultimodalProcessorBatch:
 
     def test_batch_pixel_values_empty(self):
         """Test batching empty pixel values."""
-        from vllm_mlx.multimodal_processor import MultimodalProcessor
+        from token_workshed_nextcore.multimodal_processor import MultimodalProcessor
 
         # Create mock processor
         mock_model = MagicMock()
@@ -314,7 +314,7 @@ class TestMultimodalProcessorBatch:
 
     def test_batch_pixel_values_single(self):
         """Test batching single pixel value."""
-        from vllm_mlx.multimodal_processor import MultimodalProcessor
+        from token_workshed_nextcore.multimodal_processor import MultimodalProcessor
 
         mock_model = MagicMock()
         mock_processor = MagicMock()
@@ -329,7 +329,7 @@ class TestMultimodalProcessorBatch:
 
     def test_batch_pixel_values_multiple(self):
         """Test batching multiple pixel values."""
-        from vllm_mlx.multimodal_processor import MultimodalProcessor
+        from token_workshed_nextcore.multimodal_processor import MultimodalProcessor
 
         mock_model = MagicMock()
         mock_processor = MagicMock()
@@ -346,7 +346,7 @@ class TestMultimodalProcessorBatch:
 
     def test_batch_image_grid_thw(self):
         """Test batching image grid thw."""
-        from vllm_mlx.multimodal_processor import MultimodalProcessor
+        from token_workshed_nextcore.multimodal_processor import MultimodalProcessor
 
         mock_model = MagicMock()
         mock_processor = MagicMock()
@@ -363,7 +363,7 @@ class TestMultimodalProcessorBatch:
 
     def test_prepare_for_batch(self):
         """Test prepare_for_batch method."""
-        from vllm_mlx.multimodal_processor import (
+        from token_workshed_nextcore.multimodal_processor import (
             MultimodalProcessor,
             ProcessedMultimodalInput,
         )
@@ -397,7 +397,7 @@ class TestMultimodalProcessorBatch:
 
     def test_compute_vision_hash(self):
         """Test vision hash computation."""
-        from vllm_mlx.multimodal_processor import MultimodalProcessor
+        from token_workshed_nextcore.multimodal_processor import MultimodalProcessor
 
         mock_model = MagicMock()
         mock_processor = MagicMock()
@@ -418,7 +418,7 @@ class TestVisionCache:
 
     def test_cache_creation(self):
         """Test VLM cache creation."""
-        from vllm_mlx.mllm_cache import MLLMCacheManager
+        from token_workshed_nextcore.mllm_cache import MLLMCacheManager
 
         cache = MLLMCacheManager(max_entries=10)
 
@@ -427,7 +427,7 @@ class TestVisionCache:
 
     def test_cache_miss(self):
         """Test cache miss."""
-        from vllm_mlx.mllm_cache import MLLMCacheManager
+        from token_workshed_nextcore.mllm_cache import MLLMCacheManager
 
         cache = MLLMCacheManager()
 
@@ -439,7 +439,7 @@ class TestVisionCache:
 
     def test_cache_store_and_fetch(self):
         """Test storing and fetching from cache."""
-        from vllm_mlx.mllm_cache import MLLMCacheManager
+        from token_workshed_nextcore.mllm_cache import MLLMCacheManager
 
         cache = MLLMCacheManager()
 
@@ -457,7 +457,7 @@ class TestVisionCache:
 
     def test_cache_eviction(self):
         """Test cache eviction when full."""
-        from vllm_mlx.mllm_cache import MLLMCacheManager
+        from token_workshed_nextcore.mllm_cache import MLLMCacheManager
 
         cache = MLLMCacheManager(max_entries=2)
 
@@ -494,7 +494,7 @@ class TestMLLMSchedulerIntegration:
 
     async def test_single_request(self, test_image_path):
         """Test single MLLM request."""
-        from vllm_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
+        from token_workshed_nextcore.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
         from mlx_vlm import load
 
         # Load a small model
@@ -528,7 +528,7 @@ class TestMLLMSchedulerIntegration:
 
     async def test_concurrent_requests(self, test_image_path):
         """Test multiple concurrent MLLM requests."""
-        from vllm_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
+        from token_workshed_nextcore.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
         from mlx_vlm import load
 
         model, processor = load("mlx-community/Qwen3-VL-4B-Instruct-3bit")
@@ -567,7 +567,7 @@ class TestMLLMSchedulerIntegration:
 
     async def test_streaming(self, test_image_path):
         """Test streaming MLLM generation."""
-        from vllm_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
+        from token_workshed_nextcore.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
         from mlx_vlm import load
 
         model, processor = load("mlx-community/Qwen3-VL-4B-Instruct-3bit")

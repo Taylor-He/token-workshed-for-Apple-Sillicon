@@ -20,6 +20,7 @@ where
     content: Element<'a, Message, Theme, Renderer>,
     scale: f32,
     translate: Option<Box<dyn Fn(Rectangle, Rectangle) -> Vector + 'a>>,
+    interactive: bool,
     class: Theme::Class<'a>,
 }
 
@@ -35,6 +36,7 @@ where
             content: content.into(),
             scale: 1.0,
             translate: None,
+            interactive: true,
             class: Theme::default(),
         }
     }
@@ -55,6 +57,12 @@ where
         translate: impl Fn(Rectangle, Rectangle) -> Vector + 'a,
     ) -> Self {
         self.translate = Some(Box::new(translate));
+        self
+    }
+
+    /// Sets whether the floating contents receive pointer and keyboard events.
+    pub fn interactive(mut self, interactive: bool) -> Self {
+        self.interactive = interactive;
         self
     }
 
@@ -134,7 +142,7 @@ where
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        if self.is_floating(layout.bounds(), *viewport) {
+        if !self.interactive || self.is_floating(layout.bounds(), *viewport) {
             return;
         }
 
@@ -186,7 +194,7 @@ where
         viewport: &Rectangle,
         renderer: &Renderer,
     ) -> mouse::Interaction {
-        if self.is_floating(layout.bounds(), *viewport) {
+        if !self.interactive || self.is_floating(layout.bounds(), *viewport) {
             return mouse::Interaction::None;
         }
 
@@ -311,6 +319,9 @@ where
         clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
     ) {
+        if !self.float.interactive {
+            return;
+        }
         let inverse = self.transformation.inverse();
 
         self.float.content.as_widget_mut().update(
@@ -375,6 +386,9 @@ where
         cursor: mouse::Cursor,
         renderer: &Renderer,
     ) -> mouse::Interaction {
+        if !self.float.interactive {
+            return mouse::Interaction::None;
+        }
         if !cursor.is_over(layout.bounds()) {
             return mouse::Interaction::None;
         }

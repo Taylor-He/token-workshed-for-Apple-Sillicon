@@ -303,3 +303,5 @@ extensions/diffs-language-pack/assets/viewer-runtime.js
 /.opengrep-out/
 /.crabbox-artifacts
 .comux*
+# NextCore builds the pinned runtime from this checkout and needs its lockfile.
+!pnpm-lock.yaml

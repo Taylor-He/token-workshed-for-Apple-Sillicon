@@ -1,5 +1,8 @@
 # Contributing
 
+> **0.2.1 historical documentation.** These instructions target the retired vLLM-MLX runtime and are not valid NextCore commands. Use [the NextCore documentation](../nextcore/README.md) for current setup and capability status.
+
+
 We welcome contributions to vllm-mlx!
 
 ## Getting Started
@@ -25,18 +28,18 @@ pytest tests/
 pytest tests/test_paged_cache.py -v
 
 # Run with coverage
-pytest --cov=vllm_mlx tests/
+pytest --cov=token_workshed_nextcore tests/
 ```
 
 ### Code Style
 
 ```bash
 # Format code
-black vllm_mlx/
-isort vllm_mlx/
+black token_workshed_nextcore/
+isort token_workshed_nextcore/
 
 # Type checking
-mypy vllm_mlx/
+mypy token_workshed_nextcore/
 ```
 
 ### Running Benchmarks

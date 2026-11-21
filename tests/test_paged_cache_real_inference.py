@@ -24,9 +24,9 @@ async def run_concurrent_inference():
     """Run 20 concurrent requests with real inference in 2 rounds."""
     from mlx_lm import load
 
-    from vllm_mlx.engine import AsyncEngineCore, EngineConfig
-    from vllm_mlx.request import SamplingParams
-    from vllm_mlx.scheduler import SchedulerConfig
+    from token_workshed_nextcore.engine import AsyncEngineCore, EngineConfig
+    from token_workshed_nextcore.request import SamplingParams
+    from token_workshed_nextcore.scheduler import SchedulerConfig
 
     model_name = "mlx-community/Qwen3-0.6B-8bit"
 

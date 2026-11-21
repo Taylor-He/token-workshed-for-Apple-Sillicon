@@ -2,13 +2,13 @@
 """
 Tests for Pydantic API models.
 
-Tests all request/response models in vllm_mlx/api/models.py.
+Tests all request/response models in token_workshed_nextcore/api/models.py.
 These are pure Pydantic models with no MLX dependency.
 """
 
 import time
 
-from vllm_mlx.api.models import (
+from token_workshed_nextcore.api.models import (
     AssistantMessage,
     AudioSeparationRequest,
     AudioSpeechRequest,
@@ -394,7 +394,7 @@ class TestModelsEndpoint:
         info = ModelInfo(id="mlx-community/Llama-3.2-3B-Instruct-4bit")
         assert info.id == "mlx-community/Llama-3.2-3B-Instruct-4bit"
         assert info.object == "model"
-        assert info.owned_by == "vllm-mlx"
+        assert info.owned_by == "sglang"
 
     def test_models_response(self):
         resp = ModelsResponse(

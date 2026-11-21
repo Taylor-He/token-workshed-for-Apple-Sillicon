@@ -77,6 +77,22 @@ pub struct BlockDefinition {
     pub default_params: Map<String, Value>,
 }
 
+pub fn is_retired_work_order_block(type_id: &str) -> bool {
+    matches!(
+        type_id,
+        "train_sft"
+            | "train_lora"
+            | "train_qlora"
+            | "train_dora"
+            | "train_full"
+            | "train_dpo"
+            | "fuse_adapter"
+            | "quantize_mlx"
+            | "response_distill"
+            | "logits_distill"
+    )
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkshedIssue {
     pub severity: String,
@@ -1750,6 +1766,26 @@ fn scalar_number(value: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removed_training_and_conversion_blocks_are_marked_retired() {
+        for type_id in [
+            "train_sft",
+            "train_lora",
+            "train_qlora",
+            "train_dora",
+            "train_full",
+            "train_dpo",
+            "fuse_adapter",
+            "quantize_mlx",
+            "response_distill",
+            "logits_distill",
+        ] {
+            assert!(is_retired_work_order_block(type_id));
+        }
+        assert!(!is_retired_work_order_block("benchmark_model"));
+        assert!(!is_retired_work_order_block("evaluate_loss"));
+    }
 
     fn capabilities() -> Value {
         json!({

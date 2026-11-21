@@ -10,6 +10,7 @@ const MAX_JSON_RESPONSE_BYTES: u64 = 32 * 1024 * 1024;
 pub struct ApiClient {
     pub api_base: String,
     pub manager_token: String,
+    pub agent_token: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -18,7 +19,7 @@ pub struct ConfigPayload {
     pub max_tokens: u32,
     pub temperature: f32,
     pub token_workshed_version: String,
-    pub vllm_mlx_version: String,
+    pub sglang_version: String,
     pub manager_auth_required: bool,
 }
 
@@ -26,10 +27,7 @@ pub struct ConfigPayload {
 pub struct RuntimeConfig {
     pub continuous_batching: bool,
     pub use_paged_cache: bool,
-    pub kv_cache_quantization: bool,
     pub chunked_prefill_tokens: String,
-    pub enable_mtp: bool,
-    pub mtp_draft_tokens: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -89,48 +87,6 @@ pub struct CommunitySearchPayload {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct QuantizationCapabilities {
-    pub ok: bool,
-    pub engines: Vec<Value>,
-    pub workers: Vec<Value>,
-    pub warnings: Vec<String>,
-    pub managed_model_root: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct QuantizationRequest {
-    pub source: Value,
-    pub engine: String,
-    pub worker_id: String,
-    pub preset_id: String,
-    pub overrides: Value,
-    pub output_name: String,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct QuantizationJob {
-    pub id: String,
-    pub engine: String,
-    pub status: String,
-    pub stage: String,
-    pub progress: f32,
-    pub speed: String,
-    pub eta_seconds: Option<u64>,
-    pub message: String,
-    pub error: String,
-    pub artifact: Option<Value>,
-    pub delivery_options: Vec<String>,
-    pub allowed_actions: Vec<String>,
-    pub raw: Value,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct QuantizationDelivery {
-    pub job_id: String,
-    pub action: String,
-}
-
-#[derive(Debug, Clone, Default)]
 pub struct ChatResult {
     pub reply: String,
     pub model: String,
@@ -138,31 +94,18 @@ pub struct ChatResult {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct AgentProfilePayload {
-    pub model: String,
-    pub configured: bool,
-    pub profile: Option<Value>,
+pub struct ChatImageAttachment {
+    pub mime_type: String,
+    pub base64: String,
+    pub app: String,
+    pub window_title: String,
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct AgentProfileJob {
-    pub job_id: String,
-    pub model: String,
-    pub state: String,
-    pub phase: String,
-    pub progress: f32,
-    pub error: String,
-    pub profile: Option<Value>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct AgentProfileConfigurePayload {
-    pub model: String,
-    pub job_id: String,
-    pub started: bool,
-    pub reused: bool,
-    pub profile: Option<Value>,
-    pub job: Option<AgentProfileJob>,
+pub struct ChatSearchResult {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -212,8 +155,15 @@ pub struct JetBrainsIntegrationPayload {
 #[derive(Debug, Clone)]
 pub enum ChatStreamEvent {
     Start,
-    ThinkingDelta(String),
     AnswerDelta(String),
+    AnswerReplace(String),
+    ToolStatus(String),
+    ToolResults {
+        message: String,
+        empty_message: String,
+        results: Vec<ChatSearchResult>,
+    },
+    ToolAttachment(ChatImageAttachment),
     Done(ChatResult),
     Error(String),
 }
@@ -223,7 +173,95 @@ impl ApiClient {
         Self {
             api_base: trim_slash(api_base.into()),
             manager_token: manager_token.into(),
+            agent_token: String::new(),
         }
+    }
+
+    pub fn with_agent_token(mut self, token: impl Into<String>) -> Self {
+        self.agent_token = token.into();
+        self
+    }
+
+    pub async fn agent_dashboard(self) -> Result<Value, String> {
+        self.get_json("/api/agent/dashboard")
+    }
+
+    pub async fn agent_action(self, command: Value) -> Result<Value, String> {
+        self.post_json("/api/agent/actions", command)
+    }
+
+    pub async fn agent_reindex(self, conversations: Vec<Value>) -> Result<(), String> {
+        self.post_json(
+            "/api/agent/sessions/reindex",
+            json!({ "conversations": conversations }),
+        )?;
+        Ok(())
+    }
+
+    pub async fn agent_data_export(self, categories: Vec<String>) -> Result<Value, String> {
+        self.post_json(
+            "/api/agent/data/export",
+            json!({ "categories": categories }),
+        )
+    }
+
+    pub async fn agent_data_preview_import(
+        self,
+        transfer: Value,
+        categories: Vec<String>,
+    ) -> Result<Value, String> {
+        self.post_json(
+            "/api/agent/data/preview-import",
+            json!({ "transfer": transfer, "categories": categories }),
+        )
+    }
+
+    pub async fn agent_data_import(
+        self,
+        transfer: Value,
+        categories: Vec<String>,
+    ) -> Result<Value, String> {
+        self.post_json(
+            "/api/agent/data/import",
+            json!({ "transfer": transfer, "categories": categories }),
+        )
+    }
+
+    pub async fn local_agent_data_export(self, categories: Vec<String>) -> Result<Value, String> {
+        self.post_json(
+            "/api/manager/agent-data/local-export",
+            json!({ "categories": categories }),
+        )
+    }
+
+    pub async fn local_agent_data_preview_import(
+        self,
+        transfer: Value,
+        categories: Vec<String>,
+    ) -> Result<Value, String> {
+        self.post_json(
+            "/api/manager/agent-data/local-preview-import",
+            json!({ "transfer": transfer, "categories": categories }),
+        )
+    }
+
+    pub async fn local_agent_data_import(
+        self,
+        transfer: Value,
+        categories: Vec<String>,
+    ) -> Result<Value, String> {
+        self.post_json(
+            "/api/manager/agent-data/local-import",
+            json!({ "transfer": transfer, "categories": categories }),
+        )
+    }
+
+    pub async fn cancel_chat(self, run_id: String) -> Result<bool, String> {
+        let value = self.post_json("/api/chat/cancel", json!({ "run_id": run_id }))?;
+        Ok(value
+            .get("cancelled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false))
     }
 
     pub async fn config(self) -> Result<ConfigPayload, String> {
@@ -233,7 +271,7 @@ impl ApiClient {
             max_tokens: u32_at(&value, "max_tokens", 1024),
             temperature: f32_at(&value, "temperature", 0.7),
             token_workshed_version: string_at(&value, "token_workshed_version"),
-            vllm_mlx_version: string_at(&value, "vllm_mlx_version"),
+            sglang_version: string_at(&value, "sglang_version"),
             manager_auth_required: bool_at(&value, "manager_auth_required"),
         })
     }
@@ -241,6 +279,34 @@ impl ApiClient {
     pub async fn manager_models(self) -> Result<ManagerModelsPayload, String> {
         let value = self.get_json("/api/manager/models")?;
         Ok(parse_manager_models(value))
+    }
+
+    pub async fn performance(self) -> Result<Value, String> {
+        self.get_json("/api/manager/performance")
+    }
+
+    pub async fn server_connection(self) -> Result<Value, String> {
+        self.get_json("/api/manager/server-connection")
+    }
+
+    pub async fn inspect_remote_server(self, target: Value) -> Result<Value, String> {
+        self.post_json("/api/manager/remote/inspect", target)
+    }
+
+    pub async fn connect_remote_server(self, target: Value) -> Result<Value, String> {
+        self.post_json("/api/manager/remote/connect", target)
+    }
+
+    pub async fn disconnect_remote_server(self) -> Result<Value, String> {
+        self.post_json("/api/manager/remote/disconnect", json!({}))
+    }
+
+    pub async fn set_local_server_mode(self, enabled: bool) -> Result<Value, String> {
+        self.post_json("/api/manager/local-server", json!({"enabled": enabled}))
+    }
+
+    pub async fn stop_model_server(self) -> Result<Value, String> {
+        self.post_json("/api/manager/stop", json!({}))
     }
 
     pub async fn status(self, server_url: String) -> Result<StatusPayload, String> {
@@ -264,53 +330,6 @@ impl ApiClient {
     pub async fn delete_model(self, model: String) -> Result<ManagerModelsPayload, String> {
         let value = self.post_json("/api/manager/delete-model", json!({ "model": model }))?;
         Ok(parse_manager_models(value))
-    }
-
-    pub async fn agent_profile(self, model: String) -> Result<AgentProfilePayload, String> {
-        let path = format!("/api/agent/profile?model={}", percent_encode(&model));
-        let value = self.get_json(&path)?;
-        Ok(AgentProfilePayload {
-            model: string_at(&value, "model"),
-            configured: bool_at(&value, "configured"),
-            profile: value.get("profile").cloned().filter(|item| !item.is_null()),
-        })
-    }
-
-    pub async fn configure_agent_profile(
-        self,
-        model: String,
-        server_url: String,
-        force: bool,
-    ) -> Result<AgentProfileConfigurePayload, String> {
-        let value = self.post_json(
-            "/api/agent/profile/configure",
-            json!({
-                "model": model,
-                "server_url": server_url,
-                "force": force,
-            }),
-        )?;
-        let job = value.get("job").map(parse_agent_profile_job);
-        Ok(AgentProfileConfigurePayload {
-            model: string_at(&value, "model"),
-            job_id: string_at(&value, "job_id"),
-            started: bool_at(&value, "started"),
-            reused: bool_at(&value, "reused"),
-            profile: value.get("profile").cloned().filter(|item| !item.is_null()),
-            job,
-        })
-    }
-
-    pub async fn agent_profile_job(self, job_id: String) -> Result<AgentProfileJob, String> {
-        let path = format!("/api/agent/profile/configure/{}", percent_encode(&job_id));
-        let value = self.get_json(&path)?;
-        Ok(parse_agent_profile_job(value.get("job").unwrap_or(&value)))
-    }
-
-    pub async fn delete_agent_profile(self, model: String) -> Result<bool, String> {
-        let path = format!("/api/agent/profile?model={}", percent_encode(&model));
-        let value = self.delete_json(&path)?;
-        Ok(bool_at(&value, "deleted"))
     }
 
     pub async fn ide_connections(self) -> Result<IdeConnectionsPayload, String> {
@@ -372,10 +391,10 @@ impl ApiClient {
             json!({
                 "continuous_batching": cfg.continuous_batching,
                 "use_paged_cache": cfg.use_paged_cache,
-                "kv_cache_quantization": cfg.kv_cache_quantization,
+                "kv_cache_quantization": false,
                 "chunked_prefill_tokens": cfg.chunked_prefill_tokens.parse::<u32>().unwrap_or(0),
-                "enable_mtp": cfg.enable_mtp,
-                "mtp_draft_tokens": cfg.mtp_draft_tokens.parse::<u32>().unwrap_or(1),
+                "enable_mtp": false,
+                "mtp_draft_tokens": 1,
             }),
         )?;
         Ok(parse_runtime_config(
@@ -429,11 +448,8 @@ impl ApiClient {
         })
     }
 
-    pub async fn community_deploy(self, model: String) -> Result<Option<Value>, String> {
-        let value = self.post_json(
-            "/api/manager/community/download-deploy",
-            json!({ "model": model }),
-        )?;
+    pub async fn community_download_model(self, model: String) -> Result<Option<Value>, String> {
+        let value = self.post_json("/api/manager/community/download", json!({ "model": model }))?;
         Ok(value.get("job").cloned())
     }
 
@@ -448,52 +464,6 @@ impl ApiClient {
             json!({ "action": action }),
         )?;
         Ok(value.get("job").cloned())
-    }
-
-    pub async fn quantization_capabilities(self) -> Result<QuantizationCapabilities, String> {
-        let value = self.get_json("/api/manager/quantization/capabilities")?;
-        Ok(parse_quantization_capabilities(value))
-    }
-
-    pub async fn quantization_preflight(self, payload: Value) -> Result<Value, String> {
-        self.post_json("/api/manager/quantization/preflight", payload)
-    }
-
-    pub async fn quantization_start(self, payload: Value) -> Result<QuantizationJob, String> {
-        let value = self.post_json("/api/manager/quantization/jobs", payload)?;
-        Ok(parse_quantization_job(value.get("job").unwrap_or(&value)))
-    }
-
-    pub async fn quantization_job(self, job_id: String) -> Result<QuantizationJob, String> {
-        let path = format!("/api/manager/quantization/jobs/{}", percent_encode(&job_id));
-        let value = self.get_json(&path)?;
-        Ok(parse_quantization_job(value.get("job").unwrap_or(&value)))
-    }
-
-    pub async fn quantization_action(
-        self,
-        job_id: String,
-        action: String,
-    ) -> Result<QuantizationJob, String> {
-        let path = format!(
-            "/api/manager/quantization/jobs/{}/action",
-            percent_encode(&job_id)
-        );
-        let value = self.post_json(&path, json!({ "action": action }))?;
-        Ok(parse_quantization_job(value.get("job").unwrap_or(&value)))
-    }
-
-    pub async fn quantization_delivery(
-        self,
-        job_id: String,
-        action: String,
-    ) -> Result<QuantizationJob, String> {
-        let path = format!(
-            "/api/manager/quantization/jobs/{}/delivery",
-            percent_encode(&job_id)
-        );
-        let value = self.post_json(&path, json!({ "action": action }))?;
-        Ok(parse_quantization_job(value.get("job").unwrap_or(&value)))
     }
 
     pub async fn workshed_capabilities(self) -> Result<Value, String> {
@@ -648,17 +618,82 @@ impl ApiClient {
                 "start" => {
                     emit(ChatStreamEvent::Start);
                 }
-                "thinking_delta" => {
-                    let text = raw_string_at(&value, "text");
-                    if !text.is_empty() {
-                        emit(ChatStreamEvent::ThinkingDelta(text));
-                    }
-                }
                 "answer_delta" => {
                     let text = raw_string_at(&value, "text");
                     if !text.is_empty() {
                         reply.push_str(&text);
                         emit(ChatStreamEvent::AnswerDelta(text));
+                    }
+                }
+                "answer_replace" => {
+                    let text = raw_string_at(&value, "text");
+                    reply = text.clone();
+                    emit(ChatStreamEvent::AnswerReplace(text));
+                }
+                "tool_status" => {
+                    let message = string_at(&value, "message");
+                    if !message.is_empty() {
+                        emit(ChatStreamEvent::ToolStatus(message));
+                    }
+                }
+                "tool_results" => {
+                    let results = value
+                        .get("results")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .take(5)
+                        .filter_map(|item| {
+                            let field = |name: &str, limit: usize| {
+                                item.get(name)
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .chars()
+                                    .take(limit)
+                                    .collect::<String>()
+                            };
+                            let result = ChatSearchResult {
+                                title: field("title", 240),
+                                url: field("url", 1_000),
+                                snippet: field("snippet", 500),
+                            };
+                            (!result.title.trim().is_empty()
+                                || !result.url.trim().is_empty()
+                                || !result.snippet.trim().is_empty())
+                            .then_some(result)
+                        })
+                        .collect();
+                    emit(ChatStreamEvent::ToolResults {
+                        message: string_at(&value, "message"),
+                        empty_message: string_at(&value, "empty_message"),
+                        results,
+                    });
+                }
+                "tool_attachment" => {
+                    let attachment = value.get("attachment").unwrap_or(&Value::Null);
+                    let base64 = attachment
+                        .get("base64")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    if !base64.is_empty() && base64.len() <= 12_000_000 {
+                        emit(ChatStreamEvent::ToolAttachment(ChatImageAttachment {
+                            mime_type: attachment
+                                .get("mime_type")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                            base64: base64.to_string(),
+                            app: attachment
+                                .get("app")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                            window_title: attachment
+                                .get("window_title")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                        }));
                     }
                 }
                 "done" => {
@@ -724,6 +759,8 @@ impl ApiClient {
             "/api/manager/switch-model"
                 | "/api/manager/delete-model"
                 | "/api/manager/concurrent-models"
+                | "/api/manager/remote/connect"
+                | "/api/manager/stop"
         );
         let read_timeout = if path.starts_with("/api/manager/community/search") {
             Duration::from_secs(90)
@@ -753,6 +790,18 @@ impl ApiClient {
             request.push_str(&format!(
                 "X-Token-Workshed-Manager-Token: {}\r\n",
                 self.manager_token.trim()
+            ));
+        }
+        if path == "/api/chat/cancel" && !self.agent_token.trim().is_empty() {
+            request.push_str(&format!(
+                "X-Token-Workshed-App-Session: {}\r\n",
+                self.agent_token.trim()
+            ));
+        }
+        if path.starts_with("/api/agent/") && !self.agent_token.trim().is_empty() {
+            request.push_str(&format!(
+                "X-Token-Workshed-App-Session: {}\r\n",
+                self.agent_token.trim()
             ));
         }
         if matches!(method, "POST" | "PUT") {
@@ -826,6 +875,14 @@ impl ApiClient {
                 self.manager_token.trim()
             ));
         }
+        if (path == "/api/chat/stream" || path.starts_with("/api/agent/"))
+            && !self.agent_token.trim().is_empty()
+        {
+            request.push_str(&format!(
+                "X-Token-Workshed-App-Session: {}\r\n",
+                self.agent_token.trim()
+            ));
+        }
         request.push_str("\r\n");
         request.push_str(&body);
 
@@ -888,12 +945,8 @@ pub struct ChatRequest {
     pub temperature: f32,
     pub system_prompt: String,
     pub model: String,
-    pub openclaw_enabled: bool,
-    pub cypherclaw_enabled: bool,
-    pub agent_runtime: String,
     pub conversation_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_mode: Option<String>,
+    pub run_id: String,
 }
 
 fn parse_manager_models(value: Value) -> ManagerModelsPayload {
@@ -929,75 +982,6 @@ fn parse_manager_models(value: Value) -> ManagerModelsPayload {
             .cloned()
             .unwrap_or(Value::Null),
         last_error: string_at(&value, "last_error"),
-    }
-}
-
-fn parse_quantization_capabilities(value: Value) -> QuantizationCapabilities {
-    QuantizationCapabilities {
-        ok: bool_at(&value, "ok"),
-        engines: value
-            .get("engines")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default(),
-        workers: value
-            .get("workers")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default(),
-        warnings: value
-            .get("warnings")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default(),
-        managed_model_root: string_at(&value, "managed_model_root"),
-    }
-}
-
-fn parse_quantization_job(value: &Value) -> QuantizationJob {
-    QuantizationJob {
-        id: string_at(value, "id"),
-        engine: string_at(value, "engine"),
-        status: string_at(value, "status"),
-        stage: string_at(value, "stage"),
-        progress: value.get("progress").and_then(Value::as_f64).unwrap_or(0.0) as f32,
-        speed: string_at(value, "speed"),
-        eta_seconds: value.get("eta_seconds").and_then(Value::as_u64),
-        message: string_at(value, "message"),
-        error: string_at(value, "error"),
-        artifact: value
-            .get("artifact")
-            .cloned()
-            .filter(|item| !item.is_null()),
-        delivery_options: value
-            .get("delivery_options")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default(),
-        allowed_actions: value
-            .get("allowed_actions")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default(),
-        raw: value.clone(),
     }
 }
 
@@ -1078,18 +1062,6 @@ fn parse_ide_authorizations(value: &Value) -> Vec<IdeAuthorization> {
         .unwrap_or_default()
 }
 
-fn parse_agent_profile_job(value: &Value) -> AgentProfileJob {
-    AgentProfileJob {
-        job_id: string_at(value, "job_id"),
-        model: string_at(value, "model"),
-        state: string_at(value, "state"),
-        phase: string_at(value, "phase"),
-        progress: f32_at(value, "progress", 0.0).clamp(0.0, 100.0),
-        error: string_at(value, "error"),
-        profile: value.get("profile").cloned().filter(|item| !item.is_null()),
-    }
-}
-
 fn parse_model_details(value: &Value) -> Vec<ModelDetail> {
     value
         .as_array()
@@ -1105,7 +1077,7 @@ fn parse_model_details(value: &Value) -> Vec<ModelDetail> {
                             display_name: string_or(item, "display_name", &id),
                             status: string_or(item, "status", "local"),
                             source: string_or(item, "source", "Unknown"),
-                            backend: string_or(item, "backend", "vllm-mlx"),
+                            backend: string_or(item, "backend", "sglang"),
                             quantization: string_or(item, "quantization", "Unknown"),
                             active: bool_at(item, "active"),
                             running: bool_at(item, "running"),
@@ -1160,11 +1132,8 @@ fn fallback_model_details(
                 } else {
                     "Local cache".into()
                 },
-                backend: "vllm-mlx".into(),
-                quantization: fallback_quantization_label(
-                    &id,
-                    runtime_config.kv_cache_quantization,
-                ),
+                backend: "sglang".into(),
+                quantization: fallback_quantization_label(&id),
                 active,
                 running: running.is_some(),
                 server_url: running
@@ -1178,7 +1147,7 @@ fn fallback_model_details(
         .collect()
 }
 
-fn fallback_quantization_label(model: &str, kv_cache_quantization: bool) -> String {
+fn fallback_quantization_label(model: &str) -> String {
     let lower = model.to_ascii_lowercase();
     let base = if lower.contains("4bit") || lower.contains("4-bit") || lower.contains("int4") {
         "4-bit"
@@ -1191,15 +1160,7 @@ fn fallback_quantization_label(model: &str, kv_cache_quantization: bool) -> Stri
     } else {
         "Unknown"
     };
-    if kv_cache_quantization {
-        if base == "Unknown" {
-            "KV cache quantization".into()
-        } else {
-            format!("{base} + KV cache quantization")
-        }
-    } else {
-        base.into()
-    }
+    base.into()
 }
 
 fn string_or(value: &Value, key: &str, fallback: &str) -> String {
@@ -1238,17 +1199,10 @@ fn parse_runtime_config(value: &Value) -> RuntimeConfig {
     RuntimeConfig {
         continuous_batching: bool_at(value, "continuous_batching"),
         use_paged_cache: bool_at(value, "use_paged_cache"),
-        kv_cache_quantization: bool_at(value, "kv_cache_quantization"),
         chunked_prefill_tokens: value
             .get("chunked_prefill_tokens")
             .and_then(Value::as_u64)
             .unwrap_or(0)
-            .to_string(),
-        enable_mtp: bool_at(value, "enable_mtp"),
-        mtp_draft_tokens: value
-            .get("mtp_draft_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(1)
             .to_string(),
     }
 }
@@ -1531,6 +1485,7 @@ fn f32_at(value: &Value, key: &str, fallback: f32) -> f32 {
 mod tests {
     use super::*;
     use std::io::Cursor;
+    use std::net::TcpListener;
 
     fn chunked_wire(parts: &[&[u8]]) -> Vec<u8> {
         let mut wire = Vec::new();
@@ -1576,5 +1531,92 @@ mod tests {
         assert!(error.contains("ended before a final response"));
         assert!(finalize_chat_stream(true, Ok(())).is_ok());
         assert!(finalize_chat_stream(true, Err("late socket error".into())).is_ok());
+    }
+
+    #[test]
+    fn chat_stream_sends_app_token_and_parses_tool_result_and_image_events() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local test server");
+        let address = listener.local_addr().expect("read local test address");
+        let (header_sender, header_receiver) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept chat request");
+            let mut reader = BufReader::new(stream);
+            let mut headers = String::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("read request header");
+                if line == "\r\n" || line == "\n" {
+                    break;
+                }
+                headers.push_str(&line);
+            }
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .expect("content length header");
+            let mut request_body = vec![0; content_length];
+            reader
+                .read_exact(&mut request_body)
+                .expect("read request body");
+            header_sender.send(headers).expect("return request headers");
+
+            let body = concat!(
+                "{\"type\":\"tool_results\",\"tool\":\"web_search\",\"message\":\"Found 1 search result\",\"empty_message\":\"No result links were returned.\",\"results\":[{\"title\":\"Python release\",\"url\":\"https://example.com/release\",\"snippet\":\"Security fixes\"}]}\n",
+                "{\"type\":\"tool_attachment\",\"attachment\":{\"mime_type\":\"image/png\",\"base64\":\"aGVsbG8=\",\"app\":\"NextCore\",\"window_title\":\"Chat\"}}\n",
+                "{\"type\":\"done\",\"reply\":\"Attached\",\"model\":\"test-model\",\"metrics\":{}}\n"
+            );
+            write!(
+                reader.get_mut(),
+                "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("write chat stream response");
+        });
+
+        let request = ChatRequest {
+            message: "capture the screen".into(),
+            user_content: Value::Null,
+            history: Vec::new(),
+            server_url: format!("http://{address}"),
+            max_tokens: 32,
+            temperature: 0.0,
+            system_prompt: String::new(),
+            model: "test-model".into(),
+            conversation_id: "test-conversation".into(),
+            run_id: "test-run".into(),
+        };
+        let client =
+            ApiClient::new(format!("http://{address}"), "").with_agent_token("app-session-secret");
+        let mut attachment = None;
+        let mut reply = String::new();
+        let mut search_results = Vec::new();
+        client
+            .chat_stream(request, |event| match event {
+                ChatStreamEvent::ToolAttachment(value) => attachment = Some(value),
+                ChatStreamEvent::ToolResults { results, .. } => search_results = results,
+                ChatStreamEvent::Done(value) => reply = value.reply,
+                _ => {}
+            })
+            .expect("read chat stream");
+
+        let headers = header_receiver.recv().expect("request headers");
+        server.join().expect("local test server exits");
+        assert!(headers.contains("X-Token-Workshed-App-Session: app-session-secret\r\n"));
+        assert_eq!(reply, "Attached");
+        let attachment = attachment.expect("chat stream exposes the image attachment");
+        assert_eq!(attachment.mime_type, "image/png");
+        assert_eq!(attachment.base64, "aGVsbG8=");
+        assert_eq!(attachment.app, "NextCore");
+        assert_eq!(attachment.window_title, "Chat");
+        assert_eq!(search_results.len(), 1);
+        assert_eq!(search_results[0].title, "Python release");
+        assert_eq!(search_results[0].url, "https://example.com/release");
+        assert_eq!(search_results[0].snippet, "Security fixes");
     }
 }

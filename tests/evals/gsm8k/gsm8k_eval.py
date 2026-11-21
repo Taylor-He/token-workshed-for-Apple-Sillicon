@@ -200,7 +200,7 @@ async def evaluate_with_engine(
 ) -> Tuple[List[dict], float, int]:
     """Evaluate using local engine (no server)."""
     from mlx_lm import load
-    from vllm_mlx import AsyncEngineCore, EngineConfig, SamplingParams, SchedulerConfig
+    from token_workshed_nextcore import AsyncEngineCore, EngineConfig, SamplingParams, SchedulerConfig
 
     print(f"Loading model: {model_name}")
     model, tokenizer = load(model_name)

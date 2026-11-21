@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from vllm_mlx.fim import (
+from token_workshed_nextcore.fim import (
     build_fim_prompt,
     detect_fim_tokens,
     record_completion_diagnostic,

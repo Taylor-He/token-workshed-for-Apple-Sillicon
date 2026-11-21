@@ -3,7 +3,7 @@
 
 import gc
 import pytest
-from vllm_mlx import (
+from token_workshed_nextcore import (
     EngineCore,
     EngineConfig,
     SamplingParams,

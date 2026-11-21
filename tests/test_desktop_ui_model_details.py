@@ -9,20 +9,21 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_mlx.desktop_ui import (
+from token_workshed_nextcore.desktop_ui import (
     LocalModelServerManager,
+    _WorkshedModelResolver,
     _build_model_details,
-    _CombinedManagedModelResolver,
+    _model_capability,
 )
 
 
 def test_build_model_details_includes_runtime_metadata() -> None:
     details = _build_model_details(
-        ["mlx-community/Llama-3.2-3B-Instruct-4bit", "local-scratch"],
-        active_model="mlx-community/Llama-3.2-3B-Instruct-4bit",
+        ["Qwen/Qwen3-4B-Instruct-4bit", "local-scratch"],
+        active_model="Qwen/Qwen3-4B-Instruct-4bit",
         running_models=[
             {
-                "model": "mlx-community/Llama-3.2-3B-Instruct-4bit",
+                "model": "Qwen/Qwen3-4B-Instruct-4bit",
                 "server_url": "http://127.0.0.1:8000",
                 "kind": "primary",
                 "active": True,
@@ -34,10 +35,10 @@ def test_build_model_details_includes_runtime_metadata() -> None:
     )
 
     active = details[0]
-    assert active["id"] == "mlx-community/Llama-3.2-3B-Instruct-4bit"
+    assert active["id"] == "Qwen/Qwen3-4B-Instruct-4bit"
     assert active["status"] == "active"
     assert active["source"] == "Hugging Face"
-    assert active["backend"] == "vllm-mlx"
+    assert active["backend"] == "sglang"
     assert active["quantization"] == "4-bit + KV cache quantization"
     assert active["running"] is True
     assert active["server_url"] == "http://127.0.0.1:8000"
@@ -50,6 +51,18 @@ def test_build_model_details_includes_runtime_metadata() -> None:
     assert local["status"] == "local"
     assert local["source"] == "Local cache"
     assert local["quantization"] == "KV cache quantization"
+
+
+def test_unsupported_multimodal_capabilities_are_disabled_in_model_list() -> None:
+    capabilities = _model_capability("Qwen/Qwen3-VL-4B-Instruct")
+
+    assert capabilities["image"] is False
+    assert capabilities["video"] is False
+    assert capabilities["asr"] is False
+    assert capabilities["tts"] is False
+    assert capabilities["multimodal_reason"] == (
+        "Image, video, ASR, and TTS inputs are not supported by this NextCore build."
+    )
 
 
 def test_build_model_details_adds_running_model_missing_from_available_list() -> None:
@@ -91,14 +104,11 @@ def test_managed_model_details_read_config_through_manager_resolver(
     config_text = json.dumps(config)
     config_path.write_text(config_text, encoding="utf-8")
     model_id = "workshed/ui-quant-granite350m-20261008"
-    quantization = SimpleNamespace(resolve_model=lambda _model: None)
     workshed = SimpleNamespace(
         resolve_model=lambda model: str(model_path) if model == model_id else None
     )
     manager = LocalModelServerManager("python", "127.0.0.1", 8000)
-    manager.set_managed_model_resolver(
-        _CombinedManagedModelResolver(quantization, workshed)
-    )
+    manager.set_managed_model_resolver(_WorkshedModelResolver(workshed))
     runtime_config = {"kv_cache_quantization": True, "max_num_seqs": 3}
     runtime_before = deepcopy(runtime_config)
     details = _build_model_details(
@@ -176,7 +186,7 @@ def test_model_details_keep_name_metadata_when_resolver_fails() -> None:
         raise OSError("registry unavailable")
 
     details = _build_model_details(
-        ["mlx-community/model-4bit"],
+        ["Qwen/model-4bit"],
         active_model="",
         running_models=[],
         runtime_config={},

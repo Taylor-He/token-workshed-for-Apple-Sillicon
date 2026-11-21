@@ -4,36 +4,31 @@
 use super::*;
 
 const TERMINAL_TEXT: Color = Color::from_rgb8(0x11, 0x11, 0x11);
-const TERMINAL_SURFACE: Color = Color::from_rgb8(0xf8, 0xfa, 0xfc);
-const TERMINAL_PROMPT: &str = "vllm-mlx $";
+const TERMINAL_PROMPT: &str = "sglang $";
 
 pub(super) fn render(app: &TokenWorkshedApp) -> Element<'_, Message> {
     // This is the one real, local, stateful manager terminal. The API does
     // not offer shell switching, so do not draw a non-functional zsh menu.
-    let context = widget::container(
-        widget::row::with_capacity(2)
-            .push(
-                widget::icon::from_name("utilities-terminal-symbolic")
-                    .size(16)
-                    .icon()
-                    .class(theme::Svg::custom(|_| cosmic::iced::widget::svg::Style {
-                        color: Some(TERMINAL_TEXT),
-                    })),
-            )
-            .push(widget::text("Local shell").size(13).class(TERMINAL_TEXT))
-            .spacing(8)
-            .align_y(Alignment::Center),
-    )
-    .padding([0, 10])
-    .height(Length::Fixed(28.0))
-    .style(|_| context_style());
+    let context = widget::row::with_capacity(2)
+        .push(
+            widget::icon::from_name("utilities-terminal-symbolic")
+                .size(16)
+                .icon()
+                .class(theme::Svg::custom(|_| cosmic::iced::widget::svg::Style {
+                    color: Some(TERMINAL_TEXT),
+                })),
+        )
+        .push(widget::text("Local shell").size(13).class(TERMINAL_TEXT))
+        .spacing(8)
+        .align_y(Alignment::Center);
 
+    let palette = app.active_palette();
     let toolbar = widget::container(context)
         .padding([0, 10])
         .height(Length::Fixed(38.0))
         .width(Length::Fill)
         .align_y(Alignment::Center)
-        .style(|_| toolbar_style());
+        .style(move |_| glass_container_style(palette, GlassVariant::Control, GlassState::Rest));
 
     let mut transcript = widget::column::with_capacity(app.developer_logs.len() * 2 + 1)
         .width(Length::Fill)
@@ -99,7 +94,7 @@ pub(super) fn render(app: &TokenWorkshedApp) -> Element<'_, Message> {
             .width(Length::Fill)
             .class(theme::iced::Scrollable::Transient),
     )
-    .padding([12, 16])
+    .padding(10)
     .height(Length::Fill)
     .width(Length::Fill)
     .style(|_| output_style());
@@ -122,27 +117,14 @@ pub(super) fn command_input_id() -> widget::Id {
 }
 
 fn needs_command_separator(index: usize, line: &str) -> bool {
-    index > 0 && line.starts_with("vllm-mlx $ ")
-}
-
-fn toolbar_style() -> container::Style {
-    container::Style::default()
-        .background(Background::Color(TERMINAL_SURFACE))
-        .color(TERMINAL_TEXT)
-        .border(Border {
-            width: 1.0,
-            radius: CONTENT_RADIUS.into(),
-            color: rgba(0x11, 0x11, 0x11, 0.05),
-        })
-}
-
-fn context_style() -> container::Style {
-    toolbar_style().background(Background::Color(Color::from_rgb8(0xf9, 0xfa, 0xfc)))
+    index > 0 && line.starts_with("sglang $ ")
 }
 
 fn output_style() -> container::Style {
     container::Style::default()
-        .background(Background::Color(TERMINAL_SURFACE))
+        .background(Background::Color(
+            palette(MaterialMode::Frosted, true).panel_background,
+        ))
         .color(TERMINAL_TEXT)
         .border(Border {
             width: 0.0,
@@ -183,10 +165,10 @@ mod tests {
 
     #[test]
     fn only_new_command_groups_get_a_separator() {
-        assert!(!needs_command_separator(0, "vllm-mlx $ pwd"));
-        assert!(needs_command_separator(3, "vllm-mlx $ pwd"));
+        assert!(!needs_command_separator(0, "sglang $ pwd"));
+        assert!(needs_command_separator(3, "sglang $ pwd"));
         assert!(!needs_command_separator(4, "/project/token-workshed-0.2.0"));
-        assert!(!needs_command_separator(5, "vllm-mlx: ready"));
+        assert!(!needs_command_separator(5, "sglang: ready"));
     }
 
     #[test]

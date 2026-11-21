@@ -1,6 +1,6 @@
 # CUDA Quant Worker
 
-`vllm_mlx.quant_worker:create_quant_worker_app` is a small FastAPI contract for
+`token_workshed_nextcore.quant_worker:create_quant_worker_app` is a small FastAPI contract for
 the remote half of the Quantize page. Run it behind an HTTPS reverse proxy and
 set:
 

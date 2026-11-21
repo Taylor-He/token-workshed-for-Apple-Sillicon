@@ -1,5 +1,8 @@
 # Supported Models
 
+> **0.2.1 historical documentation.** These instructions target the retired vLLM-MLX runtime and are not valid NextCore commands. Use [the NextCore documentation](../nextcore/README.md) for current setup and capability status.
+
+
 All quantized models from [mlx-community on HuggingFace](https://huggingface.co/mlx-community/models) are compatible.
 
 Browse thousands of pre-optimized models at: **https://huggingface.co/mlx-community/models**

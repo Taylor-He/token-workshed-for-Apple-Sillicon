@@ -12,8 +12,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from vllm_mlx.request import Request, SamplingParams
-from vllm_mlx.scheduler import Scheduler, SchedulerConfig
+from token_workshed_nextcore.request import Request, SamplingParams
+from token_workshed_nextcore.scheduler import Scheduler, SchedulerConfig
 
 
 class TestContinuousBatchingBasic:
@@ -70,7 +70,7 @@ class TestContinuousBatchingIntegration:
 
     async def test_single_request(self, small_model):
         """Test single request processing."""
-        from vllm_mlx import (
+        from token_workshed_nextcore import (
             AsyncEngineCore,
             EngineConfig,
             SamplingParams,
@@ -107,7 +107,7 @@ class TestContinuousBatchingIntegration:
 
     async def test_concurrent_requests(self, small_model):
         """Test multiple concurrent requests are batched."""
-        from vllm_mlx import (
+        from token_workshed_nextcore import (
             AsyncEngineCore,
             EngineConfig,
             SamplingParams,
@@ -157,7 +157,7 @@ class TestContinuousBatchingIntegration:
 
     async def test_batching_improves_throughput(self, small_model):
         """Test that batching improves throughput vs sequential."""
-        from vllm_mlx import (
+        from token_workshed_nextcore import (
             AsyncEngineCore,
             EngineConfig,
             SamplingParams,
@@ -240,7 +240,7 @@ if __name__ == "__main__":
     async def run_benchmark():
         from mlx_lm import load
 
-        from vllm_mlx import (
+        from token_workshed_nextcore import (
             AsyncEngineCore,
             EngineConfig,
             SamplingParams,

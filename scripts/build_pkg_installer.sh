@@ -2,14 +2,16 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${1:-0.2.0}"
-RUNTIME_VERSION="${2:-0.4.0}"
+VERSION="${1:-0.2.1}"
+RUNTIME_VERSION="0.5.22"
+SGLANG_COMMIT="baa9befa381511cd4d56f83980951e5a45fffc6d"
 PYTHON_BOOTSTRAP_VERSION="${3:-3.12.8}"
 PYTHON_BOOTSTRAP_SHA256="${4:-}"
 
-APP_NAME="token-workshed.app"
+APP_NAME="nextcore.app"
 APP_PATH="$ROOT_DIR/dist/$APP_NAME"
-OUT_PKG="$ROOT_DIR/dist/token-workshed-${VERSION}-installer.pkg"
+OUT_PKG="$ROOT_DIR/dist/token-workshed NextCore.pkg"
+UPDATE_OUT_PKG="$ROOT_DIR/dist/token-workshed NextCore Update.pkg"
 PYTHON_PKG_URL="https://www.python.org/ftp/python/${PYTHON_BOOTSTRAP_VERSION}/python-${PYTHON_BOOTSTRAP_VERSION}-macos11.pkg"
 
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -23,7 +25,7 @@ if [[ ! -d "$APP_PATH" ]]; then
   exit 1
 fi
 
-NATIVE_UI_APP_BIN="$APP_PATH/Contents/MacOS/token-workshed-native-ui"
+NATIVE_UI_APP_BIN="$APP_PATH/Contents/Helpers/NextCore UI.app/Contents/MacOS/token-workshed-native-ui"
 if [[ ! -x "$NATIVE_UI_APP_BIN" ]]; then
   echo "Error: missing native UI binary in app bundle: $NATIVE_UI_APP_BIN"
   echo "Build native-ui with cargo --release, then rebuild the .app with token-workshed.spec."
@@ -43,23 +45,27 @@ COMP_DIR="$BUILD_DIR/components"
 ROOTS_DIR="$BUILD_DIR/pkgroots"
 SCRIPTS_DIR="$BUILD_DIR/scripts"
 DIST_FILE="$BUILD_DIR/distribution.xml"
-SOURCE_STAGE_DIR="$ROOTS_DIR/source/Library/Application Support/token-workshed/token-workshed-${VERSION}"
+UPDATE_DIST_FILE="$BUILD_DIR/update-distribution.xml"
+SOURCE_COMPONENTS_PLIST="$BUILD_DIR/source-components.plist"
+SOURCE_STAGE_DIR="$ROOTS_DIR/source/Library/Application Support/token-workshed-nextcore/source"
 
 rm -rf "$BUILD_DIR"
-mkdir -p "$COMP_DIR" "$ROOTS_DIR" "$SCRIPTS_DIR/runtime"
+mkdir -p "$COMP_DIR" "$ROOTS_DIR" "$SCRIPTS_DIR/runtime" "$SCRIPTS_DIR/ui" "$SCRIPTS_DIR/source"
 
 cat >"$SCRIPTS_DIR/runtime/postinstall" <<POSTINSTALL
 #!/bin/bash
 set -euo pipefail
 
-APP_SUPPORT_DIR="/Library/Application Support/token-workshed"
+APP_SUPPORT_DIR="/Library/Application Support/token-workshed-nextcore"
 RUNTIME_DIR="\$APP_SUPPORT_DIR/runtime"
 VENV_DIR="\$RUNTIME_DIR/.venv"
 RUNTIME_VERSION="$RUNTIME_VERSION"
+SGLANG_COMMIT="$SGLANG_COMMIT"
+APP_VERSION="$VERSION"
 PYTHON_BOOTSTRAP_VERSION="$PYTHON_BOOTSTRAP_VERSION"
 PYTHON_BOOTSTRAP_SHA256="$PYTHON_BOOTSTRAP_SHA256"
 PYTHON_PKG_URL="$PYTHON_PKG_URL"
-LOG_FILE="/var/log/token-workshed-install.log"
+LOG_FILE="/var/log/token-workshed-nextcore-install.log"
 
 mkdir -p "\$APP_SUPPORT_DIR"
 touch "\$LOG_FILE"
@@ -70,7 +76,7 @@ echo "token-workshed runtime postinstall started at \$(date)"
 echo "=============================="
 
 if [[ "\$(uname -m)" != "arm64" ]]; then
-  echo "ERROR: arm64 is required for vllm-mlx runtime."
+  echo "ERROR: arm64 is required for SGLang runtime."
   exit 1
 fi
 
@@ -79,18 +85,16 @@ python_is_compatible() {
   [[ -x "\$candidate" ]] || return 1
   "\$candidate" - <<'PY' >/dev/null 2>&1
 import sys
-raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
+raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)
 PY
 }
 
 find_python_bin() {
   local candidate
   for candidate in \
-    /opt/homebrew/bin/python3 \
-    /usr/local/bin/python3 \
-    /Library/Frameworks/Python.framework/Versions/3.12/bin/python3 \
-    /Library/Frameworks/Python.framework/Versions/3.11/bin/python3 \
-    /usr/bin/python3
+    /opt/homebrew/bin/python3.12 \
+    /usr/local/bin/python3.12 \
+    /Library/Frameworks/Python.framework/Versions/3.12/bin/python3
   do
     if python_is_compatible "\$candidate"; then
       echo "\$candidate"
@@ -102,7 +106,7 @@ find_python_bin() {
 
 install_python_bootstrap() {
   local pkg_file="/private/tmp/token-workshed-python-\${PYTHON_BOOTSTRAP_VERSION}.pkg"
-  echo "Python >=3.10 not found. Installing Python \${PYTHON_BOOTSTRAP_VERSION}..."
+  echo "Python 3.12 not found. Installing Python \${PYTHON_BOOTSTRAP_VERSION}..."
   /usr/bin/curl -fL "\$PYTHON_PKG_URL" -o "\$pkg_file"
 
   if ! /usr/sbin/pkgutil --check-signature "\$pkg_file" | /usr/bin/grep -qi "Python Software Foundation"; then
@@ -139,7 +143,7 @@ if [[ -z "\$PYTHON_BIN" ]]; then
 fi
 
 if [[ -z "\$PYTHON_BIN" ]]; then
-  echo "ERROR: Python >=3.10 is required but not available after bootstrap install."
+  echo "ERROR: Python 3.12 is required but not available after bootstrap install."
   exit 1
 fi
 
@@ -153,7 +157,7 @@ mkdir -p "\$RUNTIME_DIR"
 if [[ -x "\$VENV_DIR/bin/python3" ]]; then
   if ! "\$VENV_DIR/bin/python3" - <<'PY' >/dev/null 2>&1
 import sys
-raise SystemExit(0 if sys.version_info >= (3, 10) else 1)
+raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)
 PY
   then
     echo "Removing incompatible existing venv at \$VENV_DIR"
@@ -169,14 +173,30 @@ fi
 echo "Upgrading pip/setuptools/wheel..."
 "\$VENV_DIR/bin/python3" -m pip install --upgrade --retries 6 --timeout 120 pip setuptools wheel
 
-echo "Installing vllm-mlx==\${RUNTIME_VERSION} ..."
-"\$VENV_DIR/bin/python3" -m pip install --upgrade --retries 6 --timeout 120 "vllm-mlx==\${RUNTIME_VERSION}"
+SGLANG_SOURCE="\$RUNTIME_DIR/sglang-\$SGLANG_COMMIT"
+if [[ ! -d "\$SGLANG_SOURCE/.git" ]]; then
+  /usr/bin/git clone --depth 1 --branch v0.5.22 https://github.com/sgl-project/sglang.git "\$SGLANG_SOURCE"
+fi
+if [[ "\$(/usr/bin/git -C "\$SGLANG_SOURCE" rev-parse HEAD)" != "\$SGLANG_COMMIT" ]]; then
+  echo "ERROR: SGLang checkout does not match the pinned commit."
+  exit 1
+fi
+/bin/cp "\$SGLANG_SOURCE/python/pyproject_other.toml" "\$SGLANG_SOURCE/python/pyproject.toml"
+SGLANG_BUILD_RUST_EXTS="none" SETUPTOOLS_SCM_PRETEND_VERSION_FOR_SGLANG="\$RUNTIME_VERSION" \\
+  "\$VENV_DIR/bin/python3" -m pip install --retries 6 --timeout 120 "\$SGLANG_SOURCE/python[srt_mps]"
+"\$VENV_DIR/bin/python3" - <<'PY'
+from importlib.metadata import version
 
+installed = version("sglang")
+if installed != "$RUNTIME_VERSION":
+    raise SystemExit(f"Expected SGLang Runtime $RUNTIME_VERSION, found {installed}.")
+PY
+"\$VENV_DIR/bin/python3" -m pip install --retries 6 --timeout 120 "\$APP_SUPPORT_DIR/source[ide]"
 mkdir -p /usr/local/bin
-ln -sf "\$VENV_DIR/bin/vllm-mlx" /usr/local/bin/token-workshed
-
+ln -sf "\$VENV_DIR/bin/token-workshed-nextcore" /usr/local/bin/token-workshed-nextcore
 cat >"\$APP_SUPPORT_DIR/runtime-info.txt" <<INFO
-vllm-mlx=\${RUNTIME_VERSION}
+sglang=\$RUNTIME_VERSION
+sglang_commit=\$SGLANG_COMMIT
 venv=\$VENV_DIR
 python=\$PYTHON_BIN
 INFO
@@ -185,10 +205,36 @@ echo "Runtime installation completed at \$(date)"
 POSTINSTALL
 chmod +x "$SCRIPTS_DIR/runtime/postinstall"
 
+cat >"$SCRIPTS_DIR/ui/postinstall" <<'UI_POSTINSTALL'
+#!/bin/bash
+set -euo pipefail
+
+OLD_APP="/Applications/token-workshed NextCore.app"
+NEW_APP="/Applications/nextcore.app"
+BACKUP_ROOT="/Library/Application Support/token-workshed-nextcore/backups"
+
+if [[ -d "$OLD_APP" && -d "$NEW_APP" ]]; then
+  if /usr/bin/pgrep -f '/Applications/token-workshed NextCore\.app/Contents/MacOS/nextcore' >/dev/null 2>&1; then
+    echo "The previous NextCore app is running; keeping its bundle until it quits."
+    exit 0
+  fi
+
+  mkdir -p "$BACKUP_ROOT"
+  backup="$BACKUP_ROOT/token-workshed NextCore.app.pre-nextcore-bundle-path.$(/bin/date +%Y%m%d-%H%M%S).zip"
+  if [[ -e "$backup" ]]; then
+    backup="$BACKUP_ROOT/token-workshed NextCore.app.pre-nextcore-bundle-path.$(/bin/date +%s).zip"
+  fi
+  /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$OLD_APP" "$backup"
+  /usr/bin/unzip -tq "$backup" >/dev/null
+  /bin/rm -rf "$OLD_APP"
+fi
+UI_POSTINSTALL
+chmod +x "$SCRIPTS_DIR/ui/postinstall"
+
 pkgbuild \
   --nopayload \
   --scripts "$SCRIPTS_DIR/runtime" \
-  --identifier "com.taylorhe.tokenworkshed.runtime" \
+  --identifier "com.taylorhe.tokenworkshed.nextcore.runtime" \
   --version "$VERSION" \
   --install-location "/" \
   "$COMP_DIR/token-workshed-runtime.pkg"
@@ -198,7 +244,8 @@ cp -R "$APP_PATH" "$ROOTS_DIR/ui/Applications/"
 
 pkgbuild \
   --root "$ROOTS_DIR/ui" \
-  --identifier "com.taylorhe.tokenworkshed.ui" \
+  --scripts "$SCRIPTS_DIR/ui" \
+  --identifier "com.taylorhe.tokenworkshed.nextcore.ui" \
   --version "$VERSION" \
   --install-location "/" \
   "$COMP_DIR/token-workshed-ui.pkg"
@@ -211,16 +258,27 @@ fi
 mkdir -p "$SOURCE_STAGE_DIR"
 
 rsync -a \
-  --exclude "/.git/" \
+  --exclude "/.git" \
   --exclude "/.venv/" \
   --exclude "/venv/" \
   --exclude "/__pycache__/" \
   --exclude "/*.py[co]" \
   --exclude "/.pytest_cache/" \
+  --exclude "/tests/" \
+  --exclude "/examples/" \
+  --exclude "**/tests/" \
+  --exclude "**/examples/" \
   --exclude "/.ruff_cache/" \
   --exclude "/*.egg-info/" \
   --exclude "/.token-workshed-state/" \
-  --exclude "/docs/promotion/" \
+  --exclude "/RELEASE_NOTES_v0.1.5.md" \
+  --exclude "/RELEASE_NOTES_v0.1.5_SHORT.md" \
+  --exclude "/RELEASE_NOTES_v0.2.0.md" \
+  --exclude "/RELEASE_NOTES_v0.2.1.md" \
+  --include "/docs/" \
+  --include "/docs/nextcore/" \
+  --include "/docs/nextcore/***" \
+  --exclude "/docs/**" \
   --exclude "/.openclaw/" \
   --exclude "/.codex/" \
   --exclude "/.aws/" \
@@ -230,7 +288,7 @@ rsync -a \
   --exclude "/design-qa.md" \
   --exclude "/docs/testing/2026-10-08-native-ui-smoke-test.md" \
   --exclude "/docs/quantization/2026-09-30-workshed-smoke-test.md" \
-  --exclude "**/.git/" \
+  --exclude "**/.git" \
   --exclude "**/.venv/" \
   --exclude "**/venv/" \
   --exclude "**/__pycache__/" \
@@ -253,10 +311,13 @@ rsync -a \
   --exclude "/build/" \
   --exclude "/dist/" \
   --exclude "/native-ui/target/" \
-  --exclude "/native-ui/vendor/libcosmic/" \
-  --exclude "/native-ui/vendor/cosmic-protocols/" \
+  --exclude "/native-ui/vendor/" \
   --exclude "/native-ui/baseline-screenshots/" \
   --exclude "/integrations/cypherclaw/.artifacts/" \
+  --exclude "/integrations/cypherclaw/" \
+  --exclude "/integrations/hermes/" \
+  --exclude "/integrations/openclaw" \
+  --exclude "/integrations/node-runtime/" \
   --exclude "/gsm8k_qwen3_0.6b_results.json" \
   --exclude "/vlm_benchmark_results.json" \
   --exclude "/AGENTS.md" \
@@ -304,9 +365,49 @@ if [[ -n "$SENSITIVE_PAYLOAD_PATH" ]]; then
   exit 1
 fi
 
+cat >"$SOURCE_COMPONENTS_PLIST" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><array/></plist>
+PLIST
+
+cat >"$SCRIPTS_DIR/source/postinstall" <<'SOURCE_POSTINSTALL'
+#!/bin/bash
+set -euo pipefail
+
+APP_SUPPORT_DIR="/Library/Application Support/token-workshed-nextcore"
+SOURCE_DIR="$APP_SUPPORT_DIR/source"
+
+# Remove generated copies and code left by older Agent Profile releases.
+# These are source/build artifacts only; user settings and model caches stay intact.
+/bin/rm -rf "$SOURCE_DIR/build/lib"
+/bin/rm -rf "$SOURCE_DIR/token_workshed_nextcore/__pycache__"
+/bin/rm -rf "$SOURCE_DIR/vllm_mlx"
+/bin/rm -rf "$SOURCE_DIR/vllm_mlx.egg-info"
+/bin/rm -f "$SOURCE_DIR/token_workshed_nextcore/sglang_compatibility.py"
+/bin/rm -f "$SOURCE_DIR/token_workshed_nextcore/agent_profiles.py"
+/bin/rm -f "$SOURCE_DIR/tests/test_agent_profiles.py"
+/bin/rm -f "$SOURCE_DIR/tests/test_desktop_ui_agent_profiles.py"
+
+RUNTIME_PYTHON="$APP_SUPPORT_DIR/runtime/.venv/bin/python3"
+if [[ -x "$RUNTIME_PYTHON" ]]; then
+  "$RUNTIME_PYTHON" -m pip install \
+    --disable-pip-version-check \
+    --no-deps \
+    --no-build-isolation \
+    --force-reinstall \
+    "$SOURCE_DIR"
+  SITE_PACKAGES=$("$RUNTIME_PYTHON" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')
+  /bin/rm -f "$SITE_PACKAGES/token_workshed_nextcore/sglang_compatibility.py"
+fi
+SOURCE_POSTINSTALL
+chmod +x "$SCRIPTS_DIR/source/postinstall"
+
 pkgbuild \
   --root "$ROOTS_DIR/source" \
-  --identifier "com.taylorhe.tokenworkshed.source" \
+  --scripts "$SCRIPTS_DIR/source" \
+  --component-plist "$SOURCE_COMPONENTS_PLIST" \
+  --identifier "com.taylorhe.tokenworkshed.nextcore.source" \
   --version "$VERSION" \
   --install-location "/" \
   "$COMP_DIR/token-workshed-source.pkg"
@@ -314,26 +415,27 @@ pkgbuild \
 cat >"$DIST_FILE" <<DISTXML
 <?xml version="1.0" encoding="utf-8"?>
 <installer-gui-script minSpecVersion="2">
-  <title>token-workshed Installer</title>
+  <title>token-workshed NextCore Installer</title>
   <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
   <options customize="never" require-scripts="true" hostArchitectures="arm64"/>
+  <allowed-os-versions><os-version min="14.0"/></allowed-os-versions>
   <choices-outline>
+    <line choice="source"/>
     <line choice="runtime"/>
     <line choice="ui"/>
-    <line choice="source"/>
   </choices-outline>
-  <choice id="runtime" title="token-workshed Runtime" description="Install token-workshed runtime (vllm-mlx backend) into a dedicated virtual environment.">
-    <pkg-ref id="com.taylorhe.tokenworkshed.runtime"/>
+  <choice id="runtime" title="token-workshed NextCore SGLang Runtime" description="Install the pinned SGLang runtime into its dedicated virtual environment.">
+    <pkg-ref id="com.taylorhe.tokenworkshed.nextcore.runtime"/>
   </choice>
-  <choice id="ui" title="token-workshed UI" description="Install the token-workshed desktop app into /Applications.">
-    <pkg-ref id="com.taylorhe.tokenworkshed.ui"/>
+  <choice id="ui" title="token-workshed NextCore" description="Install the token-workshed NextCore app into /Applications/nextcore.app.">
+    <pkg-ref id="com.taylorhe.tokenworkshed.nextcore.ui"/>
   </choice>
-  <choice id="source" title="token-workshed Source Bundle" description="Install token-workshed $VERSION source/integration bundle into /Library/Application Support/token-workshed/token-workshed-$VERSION.">
-    <pkg-ref id="com.taylorhe.tokenworkshed.source"/>
+  <choice id="source" title="token-workshed NextCore Source Bundle" description="Install the source and integrations into /Library/Application Support/token-workshed-nextcore/source.">
+    <pkg-ref id="com.taylorhe.tokenworkshed.nextcore.source"/>
   </choice>
-  <pkg-ref id="com.taylorhe.tokenworkshed.runtime" version="$VERSION" onConclusion="none">token-workshed-runtime.pkg</pkg-ref>
-  <pkg-ref id="com.taylorhe.tokenworkshed.ui" version="$VERSION" onConclusion="none">token-workshed-ui.pkg</pkg-ref>
-  <pkg-ref id="com.taylorhe.tokenworkshed.source" version="$VERSION" onConclusion="none">token-workshed-source.pkg</pkg-ref>
+  <pkg-ref id="com.taylorhe.tokenworkshed.nextcore.runtime" version="$VERSION" onConclusion="none">token-workshed-runtime.pkg</pkg-ref>
+  <pkg-ref id="com.taylorhe.tokenworkshed.nextcore.ui" version="$VERSION" onConclusion="none">token-workshed-ui.pkg</pkg-ref>
+  <pkg-ref id="com.taylorhe.tokenworkshed.nextcore.source" version="$VERSION" onConclusion="none">token-workshed-source.pkg</pkg-ref>
 </installer-gui-script>
 DISTXML
 
@@ -343,3 +445,32 @@ productbuild \
   "$OUT_PKG"
 
 echo "Built installer: $OUT_PKG"
+
+cat >"$UPDATE_DIST_FILE" <<UPDATE_DISTXML
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+  <title>token-workshed NextCore Update</title>
+  <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
+  <options customize="never" require-scripts="true" hostArchitectures="arm64"/>
+  <allowed-os-versions><os-version min="14.0"/></allowed-os-versions>
+  <choices-outline>
+    <line choice="source"/>
+    <line choice="ui"/>
+  </choices-outline>
+  <choice id="ui" title="token-workshed NextCore" description="Update the NextCore app in /Applications/nextcore.app.">
+    <pkg-ref id="com.taylorhe.tokenworkshed.nextcore.ui"/>
+  </choice>
+  <choice id="source" title="token-workshed NextCore Source" description="Update the app source in /Library/Application Support/token-workshed-nextcore/source.">
+    <pkg-ref id="com.taylorhe.tokenworkshed.nextcore.source"/>
+  </choice>
+  <pkg-ref id="com.taylorhe.tokenworkshed.nextcore.ui" version="$VERSION" onConclusion="none">token-workshed-ui.pkg</pkg-ref>
+  <pkg-ref id="com.taylorhe.tokenworkshed.nextcore.source" version="$VERSION" onConclusion="none">token-workshed-source.pkg</pkg-ref>
+</installer-gui-script>
+UPDATE_DISTXML
+
+productbuild \
+  --distribution "$UPDATE_DIST_FILE" \
+  --package-path "$COMP_DIR" \
+  "$UPDATE_OUT_PKG"
+
+echo "Built UI/source update package (does not reinstall SGLang Runtime): $UPDATE_OUT_PKG"

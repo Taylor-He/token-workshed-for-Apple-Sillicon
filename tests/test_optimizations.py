@@ -14,7 +14,7 @@ class TestHardwareDetection:
 
     def test_detect_hardware(self):
         """Test that hardware detection works."""
-        from vllm_mlx.optimizations import detect_hardware
+        from token_workshed_nextcore.optimizations import detect_hardware
 
         hw = detect_hardware()
 
@@ -26,7 +26,7 @@ class TestHardwareDetection:
 
     def test_get_system_memory(self):
         """Test that system memory detection works."""
-        from vllm_mlx.optimizations import get_system_memory_gb
+        from token_workshed_nextcore.optimizations import get_system_memory_gb
 
         memory_gb = get_system_memory_gb()
 
@@ -35,7 +35,7 @@ class TestHardwareDetection:
 
     def test_hardware_profiles_exist(self):
         """Test that hardware profiles are defined."""
-        from vllm_mlx.optimizations import HARDWARE_PROFILES
+        from token_workshed_nextcore.optimizations import HARDWARE_PROFILES
 
         assert len(HARDWARE_PROFILES) > 0
         assert "M1" in HARDWARE_PROFILES
@@ -47,7 +47,7 @@ class TestOptimizationStatus:
 
     def test_get_optimization_status(self):
         """Test optimization status reporting."""
-        from vllm_mlx.optimizations import get_optimization_status
+        from token_workshed_nextcore.optimizations import get_optimization_status
 
         status = get_optimization_status()
 
@@ -65,7 +65,7 @@ class TestMemoryBandwidth:
     @pytest.mark.slow
     def test_memory_bandwidth_benchmark(self):
         """Test memory bandwidth benchmark."""
-        from vllm_mlx.optimizations import benchmark_memory_bandwidth
+        from token_workshed_nextcore.optimizations import benchmark_memory_bandwidth
 
         results = benchmark_memory_bandwidth()
 
@@ -83,7 +83,7 @@ class TestMemoryBandwidth:
 
 def run_quick_test():
     """Run a quick test of hardware detection."""
-    from vllm_mlx.optimizations import detect_hardware, get_optimization_status
+    from token_workshed_nextcore.optimizations import detect_hardware, get_optimization_status
 
     print("=" * 60)
     print("Quick Hardware Detection Test")

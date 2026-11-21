@@ -3,7 +3,7 @@ set -euo pipefail
 
 MODE="${1:-run}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_BUNDLE="$ROOT_DIR/dist/token-workshed.app"
+APP_BUNDLE="$ROOT_DIR/dist/nextcore.app"
 NATIVE_BINARY="$ROOT_DIR/native-ui/target/release/token-workshed-native-ui"
 INITIAL_PAGE="${TOKEN_WORKSHED_INITIAL_PAGE:-chat}"
 BUILD_PROFILE="${TOKEN_WORKSHED_BUILD_PROFILE:-release}"
@@ -38,8 +38,8 @@ build() {
   else
     (cd "$ROOT_DIR/native-ui" && cargo build --release --offline --locked)
   fi
-  TOKEN_WORKSHED_APP_BUNDLE_ID="${TOKEN_WORKSHED_APP_BUNDLE_ID:-com.taylorhe.tokenworkshed.dev020}" \
-    TOKEN_WORKSHED_IDE_BUNDLE_ID="${TOKEN_WORKSHED_IDE_BUNDLE_ID:-com.taylorhe.tokenworkshed.dev020.ide}" \
+  TOKEN_WORKSHED_APP_BUNDLE_ID="${TOKEN_WORKSHED_APP_BUNDLE_ID:-com.taylorhe.tokenworkshed.nextcore}" \
+    TOKEN_WORKSHED_IDE_BUNDLE_ID="${TOKEN_WORKSHED_IDE_BUNDLE_ID:-com.taylorhe.tokenworkshed.nextcore.ide}" \
     TOKEN_WORKSHED_NATIVE_UI_SOURCE_BIN="$NATIVE_BINARY" \
     bash "$ROOT_DIR/scripts/build_macos_app_bundle.sh"
 }

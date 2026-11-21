@@ -6,12 +6,12 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from vllm_mlx import desktop_ui
+from token_workshed_nextcore import desktop_ui
 
 
 def test_desktop_terminal_root_points_to_project_checkout() -> None:
-    assert desktop_ui.TOKEN_WORKSHED_ROOT.name == "token-workshed-0.2.0"
-    assert (desktop_ui.TOKEN_WORKSHED_ROOT / "vllm_mlx").is_dir()
+    assert desktop_ui.TOKEN_WORKSHED_ROOT == Path(__file__).resolve().parents[1]
+    assert (desktop_ui.TOKEN_WORKSHED_ROOT / "token_workshed_nextcore").is_dir()
 
 
 def _wait_for_terminal_output(fragment: str, timeout: float = 3.0) -> bool:

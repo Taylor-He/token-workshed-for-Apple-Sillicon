@@ -11,16 +11,16 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx import desktop_ui
-from vllm_mlx.desktop_ui import _register_workshed_contract_routes
-from vllm_mlx.workshed import WorkshedService
+from token_workshed_nextcore import desktop_ui
+from token_workshed_nextcore.desktop_ui import _register_workshed_contract_routes
+from token_workshed_nextcore.workshed import WorkshedService
 
 
 class _Manager:
     _snapshot_has_required_files = desktop_ui.LocalModelServerManager._snapshot_has_required_files
 
     def discover_models(self) -> list[str]:
-        return ["org/local-model", "quantized/managed", "workshed/managed"]
+        return ["org/local-model", "workshed/managed"]
 
     def search_community_models(self, query: str, limit: int) -> list[dict[str, Any]]:
         assert limit >= 1
@@ -39,40 +39,6 @@ class _Manager:
         ]
 
 
-class _Quantization:
-    def managed_model_ids(self) -> list[str]:
-        return ["quantized/managed"]
-
-    def resolve_model(self, _model_id: str) -> None:
-        return None
-
-    def capabilities(self) -> dict[str, Any]:
-        return {
-            "ok": True,
-            "engines": [
-                {
-                    "id": "mlx_local",
-                    "label": "MLX · This Mac",
-                    "presets": [
-                        {
-                            "id": "mlx-balanced",
-                            "label": "Balanced",
-                            "bits": 4,
-                            "group_size": 128,
-                            "mode": "affine",
-                        }
-                    ],
-                },
-                {
-                    "id": "vllm_cuda",
-                    "label": "CUDA · Worker",
-                    "worker_id": "worker-a",
-                    "presets": [{"id": "cuda-quality", "label": "Quality", "bits": 8}],
-                },
-            ],
-        }
-
-
 class _Workshed:
     def __init__(self, model_path: Path | None = None) -> None:
         self.model_path = model_path
@@ -89,22 +55,7 @@ class _Workshed:
         return {
             "ok": True,
             "runtime": {"local_only": True},
-            "blocks": [
-                {
-                    "type_id": "quantize_mlx",
-                    "presets": [
-                        {
-                            "id": "mlx-balanced",
-                            "label": "Balanced",
-                            "params": {
-                                "bits": 4,
-                                "group_size": 128,
-                                "mode": "affine",
-                            },
-                        }
-                    ],
-                }
-            ],
+            "blocks": [],
         }
 
     def run_receipt(self, run_id: str) -> dict[str, Any]:
@@ -121,14 +72,12 @@ class _Workshed:
 def _client(
     *,
     manager: Any | None = None,
-    quantization: Any | None = None,
     workshed: Any | None = None,
 ) -> TestClient:
     app = FastAPI()
     _register_workshed_contract_routes(
         app,
         manager=manager or _Manager(),
-        quantization_service=quantization or _Quantization(),
         workshed_service=workshed or _Workshed(),
         manager_api_token="manager-token",
     )
@@ -139,7 +88,7 @@ def _headers() -> dict[str, str]:
     return {"x-token-workshed-manager-token": "manager-token"}
 
 
-def test_options_contract_exposes_exactly_the_seven_allowlisted_providers() -> None:
+def test_options_contract_exposes_only_sglang_workflow_providers() -> None:
     provider_schema = desktop_ui.WorkshedOptionsPayload.model_json_schema()["properties"][
         "provider"
     ]
@@ -149,9 +98,7 @@ def test_options_contract_exposes_exactly_the_seven_allowlisted_providers() -> N
         "models.managed",
         "models.hub",
         "datasets.hub",
-        "quantization.presets",
         "lm_eval.tasks",
-        "model.target_modules",
     }
 
 
@@ -181,12 +128,9 @@ def test_capability_catalog_only_references_registered_option_providers(
 
     assert referenced == allowed
 
-    quantize = next(
-        block for block in capabilities["blocks"] if block["type_id"] == "quantize_mlx"
-    )
-    preset_ui = quantize["param_schema"]["properties"]["preset_id"]["x-ui"]
-    assert preset_ui["options_provider"] == "quantization.presets"
-    assert preset_ui["options_context"] == {"engine": "mlx_local"}
+    block_ids = {block["type_id"] for block in capabilities["blocks"]}
+    assert "quantize_mlx" not in block_ids
+    assert "train_sft" not in block_ids
 
 
 def test_options_require_manager_auth_and_strict_provider_allowlist() -> None:
@@ -259,10 +203,7 @@ def test_local_and_managed_model_options_are_separate(monkeypatch, tmp_path: Pat
             json={"provider": "models.managed", "query": "managed"},
         )
         assert managed.status_code == 200
-        assert {item["id"] for item in managed.json()["items"]} == {
-            "quantized/managed",
-            "workshed/managed",
-        }
+        assert {item["id"] for item in managed.json()["items"]} == {"workshed/managed"}
 
 
 def test_hub_models_reuse_manager_search_without_returning_local_rows() -> None:
@@ -296,82 +237,15 @@ def test_hub_offline_is_a_clear_empty_result_instead_of_500() -> None:
         assert "offline" in response.json()["message"].lower()
 
 
-def test_quantization_presets_are_capability_driven_and_context_filtered() -> None:
+def test_removed_training_and_quantization_option_providers_are_rejected() -> None:
     with _client() as client:
-        response = client.post(
-            "/api/manager/workshed/options",
-            headers=_headers(),
-            json={
-                "provider": "quantization.presets",
-                "context": {"engine": "mlx_local"},
-            },
-        )
-        assert response.status_code == 200
-        assert response.json()["items"] == [
-            {
-                "id": "mlx-balanced",
-                "label": "Balanced",
-                "description": "4 bit · 128 group · affine",
-                "metadata": {
-                    "source": "workshed_capabilities",
-                    "engine": "mlx_local",
-                    "worker_id": "",
-                    "bits": 4,
-                    "group_size": 128,
-                    "mode": "affine",
-                },
-            }
-        ]
-
-
-def test_quantization_preset_options_never_expose_remote_workers() -> None:
-    """Workshed is local-only even though the legacy facade still knows Workers."""
-
-    with _client() as client:
-        unfiltered = client.post(
-            "/api/manager/workshed/options",
-            headers=_headers(),
-            json={"provider": "quantization.presets"},
-        )
-        assert unfiltered.status_code == 200
-        assert {item["metadata"]["engine"] for item in unfiltered.json()["items"]} == {
-            "mlx_local"
-        }
-        assert all(not item["metadata"]["worker_id"] for item in unfiltered.json()["items"])
-
-        remote = client.post(
-            "/api/manager/workshed/options",
-            headers=_headers(),
-            json={
-                "provider": "quantization.presets",
-                "context": {"engine": "vllm_cuda", "worker_id": "worker-a"},
-            },
-        )
-        assert remote.status_code == 200
-        assert remote.json()["items"] == []
-        assert "this mac only" in remote.json()["message"].lower()
-
-
-def test_quantization_preset_lookup_does_not_probe_legacy_workers() -> None:
-    class WorkerAwareQuantization(_Quantization):
-        def __init__(self) -> None:
-            self.capability_probe_count = 0
-
-        def capabilities(self) -> dict[str, Any]:
-            self.capability_probe_count += 1
-            return super().capabilities()
-
-    quantization = WorkerAwareQuantization()
-    with _client(quantization=quantization, workshed=_Workshed()) as client:
-        response = client.post(
-            "/api/manager/workshed/options",
-            headers=_headers(),
-            json={"provider": "quantization.presets"},
-        )
-
-    assert response.status_code == 200
-    assert [item["id"] for item in response.json()["items"]] == ["mlx-balanced"]
-    assert quantization.capability_probe_count == 0
+        for provider in ("quantization.presets", "model.target_modules"):
+            response = client.post(
+                "/api/manager/workshed/options",
+                headers=_headers(),
+                json={"provider": provider},
+            )
+            assert response.status_code == 422
 
 
 def test_dataset_and_lm_eval_providers_keep_the_uniform_contract(
@@ -454,44 +328,6 @@ def test_lm_eval_provider_filters_installed_tasks_through_release_allowlist(
     )
 
 
-def test_target_modules_use_registered_model_config_and_reject_urls(
-    tmp_path: Path,
-) -> None:
-    (tmp_path / "config.json").write_text(
-        json.dumps({"model_type": "llama"}),
-        encoding="utf-8",
-    )
-    workshed = _Workshed(tmp_path)
-    with _client(workshed=workshed) as client:
-        response = client.post(
-            "/api/manager/workshed/options",
-            headers=_headers(),
-            json={
-                "provider": "model.target_modules",
-                "query": "q_proj",
-                "context": {
-                    "source": "managed",
-                    "ref": "workshed/managed",
-                    "revision": "",
-                },
-            },
-        )
-        assert response.status_code == 200
-        assert [item["id"] for item in response.json()["items"]] == ["q_proj"]
-
-        rejected = client.post(
-            "/api/manager/workshed/options",
-            headers=_headers(),
-            json={
-                "provider": "model.target_modules",
-                "context": {"source": "hub", "ref": "https://example.test/model"},
-            },
-        )
-        assert rejected.status_code == 200
-        assert rejected.json()["items"] == []
-        assert "not accepted" in rejected.json()["message"]
-
-
 def test_run_receipt_contract_supports_in_progress_runs_and_404() -> None:
     with _client() as client:
         response = client.get(
@@ -572,10 +408,7 @@ def test_real_workshed_capabilities_are_strictly_local(tmp_path: Path) -> None:
     capabilities = WorkshedService(root=tmp_path).capabilities()
 
     assert capabilities["runtime"]["local_only"] is True
-    assert {runner["id"] for runner in capabilities["runners"]} == {
-        "mlx_local",
-        "hf_mps",
-    }
+    assert {runner["id"] for runner in capabilities["runners"]} == {"manager"}
     assert all(runner["kind"] == "local" for runner in capabilities["runners"])
     serialized = json.dumps(capabilities).lower()
     assert "vllm_cuda" not in serialized

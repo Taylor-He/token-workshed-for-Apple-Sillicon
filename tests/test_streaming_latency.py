@@ -213,8 +213,8 @@ async def test_output_collector():
 
     sys.path.insert(0, str(__file__).rsplit("/", 2)[0])
 
-    from vllm_mlx.output_collector import RequestOutputCollector, RequestStreamState
-    from vllm_mlx.request import RequestOutput
+    from token_workshed_nextcore.output_collector import RequestOutputCollector, RequestStreamState
+    from token_workshed_nextcore.request import RequestOutput
 
     print("Testing RequestOutputCollector...")
 

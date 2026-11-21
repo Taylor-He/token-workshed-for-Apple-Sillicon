@@ -104,7 +104,7 @@ pub enum Page {
     Chat,
     Models,
     Workshed,
-    Server,
+    Runtime,
     Logs,
     Community,
     Settings,
@@ -116,7 +116,7 @@ impl Page {
         Self::Chat,
         Self::Models,
         Self::Workshed,
-        Self::Server,
+        Self::Runtime,
         Self::Logs,
         Self::Community,
         Self::About,
@@ -128,7 +128,7 @@ impl Page {
             Self::Chat => "Chat",
             Self::Models => "Model Settings",
             Self::Workshed => "Workshed",
-            Self::Server => "Server Settings",
+            Self::Runtime => "Runtime & Agent",
             Self::Logs => "Terminal",
             Self::Community => "Community",
             Self::Settings => "App Settings",
@@ -140,7 +140,7 @@ impl Page {
         match value.trim().to_ascii_lowercase().as_str() {
             "models" | "model" | "model-settings" => Self::Models,
             "workshed" | "workshop" | "quantize" | "quantization" => Self::Workshed,
-            "server" | "server-settings" => Self::Server,
+            "server" | "server-settings" | "agent" | "runtime" | "runtime-agent" => Self::Runtime,
             "logs" | "log" => Self::Logs,
             // Keep old launch arguments working after the prompt page was
             // folded into Terminal.
@@ -150,6 +150,25 @@ impl Page {
             "about" => Self::About,
             _ => Self::Chat,
         }
+    }
+}
+
+#[cfg(test)]
+mod page_tests {
+    use super::Page;
+
+    #[test]
+    fn legacy_server_and_agent_launch_codes_open_the_merged_page() {
+        for code in ["server", "server-settings", "agent", "runtime-agent"] {
+            assert_eq!(Page::from_code(code), Page::Runtime);
+        }
+        assert_eq!(
+            Page::ALL
+                .iter()
+                .filter(|page| **page == Page::Runtime)
+                .count(),
+            1
+        );
     }
 }
 
@@ -213,6 +232,9 @@ impl Palette {
 pub const APP_PADDING: f32 = 10.0;
 pub const PAGE_FRAME_INSET: f32 = 12.0;
 pub const PAGE_SECTION_GAP: u16 = 12;
+pub const CONTROL_HEIGHT: f32 = 34.0;
+pub const ICON_CONTROL_SIZE: f32 = 32.0;
+pub const CONTROL_TEXT_SIZE: u16 = 13;
 pub const SIDEBAR_WIDTH: f32 = 34.0;
 pub const SIDEBAR_BUTTON_SIZE: f32 = 34.0;
 pub const SIDEBAR_ITEM_INSET: f32 = 8.0;
@@ -249,16 +271,16 @@ pub fn neutral_glass_border(alpha: f32) -> Color {
 pub fn palette(material: MaterialMode, blur_supported: bool) -> Palette {
     let _ = (material, blur_supported);
     Palette {
-        window_background: rgb8(0xf5, 0xf7, 0xfa),
-        // These are the opaque composites of Caligo's white glass over the
-        // #F5F7FA canvas. Opaque composites avoid black clear-color bleed on
-        // redraws when a platform does not blend child alpha surfaces.
-        inset_background: rgb8(0xf8, 0xfa, 0xfc),
-        panel_background: rgb8(0xf8, 0xfa, 0xfc),
-        panel_background_hover: rgb8(0xfa, 0xfb, 0xfd),
+        // Keep the app canvas white and use neutral gray for content surfaces.
+        // Opaque fills avoid clear-color bleed when child alpha surfaces are
+        // not blended by the platform.
+        window_background: rgb8(0xff, 0xff, 0xff),
+        inset_background: rgb8(0xf5, 0xf6, 0xf7),
+        panel_background: rgb8(0xff, 0xff, 0xff),
+        panel_background_hover: rgb8(0xfa, 0xfa, 0xfa),
         panel_border: neutral_glass_border(GLASS_BORDER_ALPHA),
-        card_background: rgb8(0xf9, 0xfa, 0xfc),
-        card_background_strong: rgb8(0xfa, 0xfb, 0xfd),
+        card_background: rgb8(0xf3, 0xf4, 0xf5),
+        card_background_strong: rgb8(0xf8, 0xf8, 0xf8),
         card_border: neutral_glass_border(GLASS_BORDER_ALPHA),
         overlay_backdrop: rgba(0x11, 0x11, 0x11, 0.10),
         text_main: rgb8(0x11, 0x11, 0x11),

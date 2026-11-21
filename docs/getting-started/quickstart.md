@@ -1,5 +1,8 @@
 # Quick Start
 
+> **0.2.1 historical documentation.** These instructions target the retired vLLM-MLX runtime and are not valid NextCore commands. Use [the NextCore documentation](../nextcore/README.md) for current setup and capability status.
+
+
 ## Option 1: OpenAI-Compatible Server
 
 Start the server:
@@ -37,7 +40,7 @@ curl http://localhost:8000/v1/chat/completions \
 ## Option 2: Direct Python API
 
 ```python
-from vllm_mlx.models import MLXLanguageModel
+from token_workshed_nextcore.models import MLXLanguageModel
 
 model = MLXLanguageModel("mlx-community/Llama-3.2-3B-Instruct-4bit")
 model.load()

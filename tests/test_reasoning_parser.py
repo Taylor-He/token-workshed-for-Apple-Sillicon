@@ -11,7 +11,7 @@ Tests cover:
 
 import pytest
 
-from vllm_mlx.reasoning import (
+from token_workshed_nextcore.reasoning import (
     DeltaMessage,
     ReasoningParser,
     get_parser,
@@ -494,7 +494,7 @@ class TestAPIModelsIntegration:
 
     def test_assistant_message_with_reasoning(self):
         """Test that AssistantMessage can hold reasoning content."""
-        from vllm_mlx.api.models import AssistantMessage
+        from token_workshed_nextcore.api.models import AssistantMessage
 
         msg = AssistantMessage(
             content="The answer is 42.", reasoning="Let me think step by step..."
@@ -505,7 +505,7 @@ class TestAPIModelsIntegration:
 
     def test_assistant_message_reasoning_none(self):
         """Test AssistantMessage with no reasoning."""
-        from vllm_mlx.api.models import AssistantMessage
+        from token_workshed_nextcore.api.models import AssistantMessage
 
         msg = AssistantMessage(content="Simple response without reasoning.")
         assert msg.content == "Simple response without reasoning."
@@ -513,7 +513,7 @@ class TestAPIModelsIntegration:
 
     def test_chat_completion_chunk_delta_with_reasoning(self):
         """Test that ChatCompletionChunkDelta can hold reasoning."""
-        from vllm_mlx.api.models import ChatCompletionChunkDelta
+        from token_workshed_nextcore.api.models import ChatCompletionChunkDelta
 
         delta = ChatCompletionChunkDelta(reasoning="thinking...")
         assert delta.reasoning == "thinking..."
@@ -525,7 +525,7 @@ class TestAPIModelsIntegration:
 
     def test_delta_transition(self):
         """Test delta during transition from reasoning to content."""
-        from vllm_mlx.api.models import ChatCompletionChunkDelta
+        from token_workshed_nextcore.api.models import ChatCompletionChunkDelta
 
         # During transition, both might have values
         delta = ChatCompletionChunkDelta(

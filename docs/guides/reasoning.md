@@ -1,5 +1,8 @@
 # Reasoning Models
 
+> **0.2.1 historical documentation.** These instructions target the retired vLLM-MLX runtime and are not valid NextCore commands. Use [the NextCore documentation](../nextcore/README.md) for current setup and capability status.
+
+
 vllm-mlx supports reasoning models that show their thinking process before giving an answer. Models like Qwen3 and DeepSeek-R1 wrap their reasoning in `<think>...</think>` tags, and vllm-mlx can parse these tags to separate the reasoning from the final response.
 
 ## Why Use Reasoning Parsing?

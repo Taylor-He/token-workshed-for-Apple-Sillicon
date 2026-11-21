@@ -2,13 +2,13 @@
 """
 Tests for Anthropic-to-OpenAI adapter conversion functions.
 
-Tests all conversion functions in vllm_mlx/api/anthropic_adapter.py.
+Tests all conversion functions in token_workshed_nextcore/api/anthropic_adapter.py.
 These are pure logic tests with no MLX dependency.
 """
 
 import json
 
-from vllm_mlx.api.anthropic_adapter import (
+from token_workshed_nextcore.api.anthropic_adapter import (
     _convert_message,
     _convert_stop_reason,
     _convert_tool,
@@ -16,13 +16,13 @@ from vllm_mlx.api.anthropic_adapter import (
     anthropic_to_openai,
     openai_to_anthropic,
 )
-from vllm_mlx.api.anthropic_models import (
+from token_workshed_nextcore.api.anthropic_models import (
     AnthropicContentBlock,
     AnthropicMessage,
     AnthropicRequest,
     AnthropicToolDef,
 )
-from vllm_mlx.api.models import (
+from token_workshed_nextcore.api.models import (
     AssistantMessage,
     ChatCompletionChoice,
     ChatCompletionResponse,

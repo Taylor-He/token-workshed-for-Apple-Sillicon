@@ -150,7 +150,7 @@ impl<Message> canvas::Program<Message, Theme, Renderer> for SidebarIcon {
                 frame.stroke(&Path::line(p(7.2, 5.0), p(9.0, 5.0)), stroke);
                 frame.stroke(&Path::line(p(9.0, 5.0), p(9.0, 6.8)), stroke);
             }
-            Page::Server => {
+            Page::Runtime => {
                 frame.stroke(
                     &Path::rounded_rectangle(p(3.5, 4.5), sz(17.0, 4.4), rr(1.2)),
                     stroke,

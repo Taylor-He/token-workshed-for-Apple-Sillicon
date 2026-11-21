@@ -1,5 +1,8 @@
 # Multimodal Models (Images & Video)
 
+> **0.2.1 historical documentation.** These instructions target the retired vLLM-MLX runtime and are not valid NextCore commands. Use [the NextCore documentation](../nextcore/README.md) for current setup and capability status.
+
+
 vllm-mlx supports vision-language models for image and video understanding.
 
 ## Supported Models
@@ -165,7 +168,7 @@ curl http://localhost:8000/v1/chat/completions \
 ## Python API
 
 ```python
-from vllm_mlx.models import MLXMultimodalLM
+from token_workshed_nextcore.models import MLXMultimodalLM
 
 mllm = MLXMultimodalLM("mlx-community/Qwen3-VL-4B-Instruct-3bit")
 mllm.load()
@@ -263,7 +266,7 @@ vllm-mlx serve mlx-community/Qwen3-VL-4B-Instruct-3bit \
 ### Python API
 
 ```python
-from vllm_mlx.mllm_cache import MLLMPrefixCacheManager
+from token_workshed_nextcore.mllm_cache import MLLMPrefixCacheManager
 
 # Create cache manager
 cache = MLLMPrefixCacheManager(max_memory_mb=512)

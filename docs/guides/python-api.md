@@ -1,5 +1,8 @@
 # Python API
 
+> **0.2.1 historical documentation.** These instructions target the retired vLLM-MLX runtime and are not valid NextCore commands. Use [the NextCore documentation](../nextcore/README.md) for current setup and capability status.
+
+
 Direct Python API for programmatic access to vllm-mlx.
 
 ## Language Models
@@ -7,7 +10,7 @@ Direct Python API for programmatic access to vllm-mlx.
 ### Basic Usage
 
 ```python
-from vllm_mlx.models import MLXLanguageModel
+from token_workshed_nextcore.models import MLXLanguageModel
 
 # Load model
 model = MLXLanguageModel("mlx-community/Llama-3.2-3B-Instruct-4bit")
@@ -60,7 +63,7 @@ output = model.generate(
 ### Basic Usage
 
 ```python
-from vllm_mlx.models import MLXMultimodalLM
+from token_workshed_nextcore.models import MLXMultimodalLM
 
 # Load model
 mllm = MLXMultimodalLM("mlx-community/Qwen3-VL-4B-Instruct-3bit")
@@ -125,7 +128,7 @@ For advanced use cases, use the engine directly:
 ### Simple Engine
 
 ```python
-from vllm_mlx.engine import SimpleEngine
+from token_workshed_nextcore.engine import SimpleEngine
 
 engine = SimpleEngine("mlx-community/Llama-3.2-3B-Instruct-4bit")
 await engine.start()
@@ -142,7 +145,7 @@ await engine.stop()
 ### Batched Engine
 
 ```python
-from vllm_mlx.engine import BatchedEngine
+from token_workshed_nextcore.engine import BatchedEngine
 
 engine = BatchedEngine("mlx-community/Llama-3.2-3B-Instruct-4bit")
 await engine.start()
@@ -172,7 +175,7 @@ print(output.finish_reason)     # "stop" or "length"
 ## Error Handling
 
 ```python
-from vllm_mlx.models import MLXLanguageModel
+from token_workshed_nextcore.models import MLXLanguageModel
 
 try:
     model = MLXLanguageModel("invalid-model")

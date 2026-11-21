@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_mlx.css_svg_ui import _normalize_server_url
-from vllm_mlx.desktop_ui import _is_loopback_host
+from token_workshed_nextcore.css_svg_ui import _normalize_server_url
+from token_workshed_nextcore.desktop_ui import _is_loopback_host
 
 
 def test_normalize_server_url_allows_loopback_defaults(monkeypatch: pytest.MonkeyPatch) -> None:

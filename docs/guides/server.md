@@ -1,5 +1,8 @@
 # OpenAI-Compatible Server
 
+> **0.2.1 historical documentation.** These instructions target the retired vLLM-MLX runtime and are not valid NextCore commands. Use [the NextCore documentation](../nextcore/README.md) for current setup and capability status.
+
+
 vllm-mlx provides a FastAPI server with full OpenAI API compatibility.
 
 ## Starting the Server

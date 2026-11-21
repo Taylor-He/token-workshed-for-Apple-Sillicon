@@ -1,5 +1,8 @@
 # Audio Support
 
+> **0.2.1 historical documentation.** These instructions target the retired vLLM-MLX runtime and are not valid NextCore commands. Use [the NextCore documentation](../nextcore/README.md) for current setup and capability status.
+
+
 vllm-mlx supports audio processing using [mlx-audio](https://github.com/Blaizzy/mlx-audio), providing:
 
 - **STT (Speech-to-Text)**: Whisper, Parakeet
@@ -74,7 +77,7 @@ with open("output.wav", "wb") as f:
 Isolate voice from background noise, music, or other sounds:
 
 ```python
-from vllm_mlx.audio import AudioProcessor
+from token_workshed_nextcore.audio import AudioProcessor
 
 # Load SAM-Audio model
 processor = AudioProcessor("mlx-community/sam-audio-large-fp16")
@@ -360,7 +363,7 @@ python -m mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 \
 ### Direct Usage (without server)
 
 ```python
-from vllm_mlx.audio import STTEngine, TTSEngine, AudioProcessor
+from token_workshed_nextcore.audio import STTEngine, TTSEngine, AudioProcessor
 
 # Speech-to-Text
 stt = STTEngine("mlx-community/whisper-large-v3-mlx")
@@ -385,7 +388,7 @@ processor.save(result.residual, "background.wav")
 ### Convenience Functions
 
 ```python
-from vllm_mlx.audio import transcribe_audio, generate_speech, separate_voice
+from token_workshed_nextcore.audio import transcribe_audio, generate_speech, separate_voice
 
 # Quick transcription
 result = transcribe_audio("audio.mp3")

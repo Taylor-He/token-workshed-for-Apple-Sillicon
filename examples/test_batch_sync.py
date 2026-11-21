@@ -7,7 +7,7 @@ import time
 
 def main():
     from mlx_lm import load
-    from vllm_mlx import EngineCore, EngineConfig, SamplingParams, SchedulerConfig
+    from token_workshed_nextcore import EngineCore, EngineConfig, SamplingParams, SchedulerConfig
 
     MODEL = "mlx-community/Qwen3-0.6B-8bit"
     print(f"Loading {MODEL}...")

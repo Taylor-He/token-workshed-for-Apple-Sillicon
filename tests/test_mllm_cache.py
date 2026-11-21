@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from vllm_mlx.mllm_cache import (
+from token_workshed_nextcore.mllm_cache import (
     MLLMCacheStats,
     MLLMPrefixCacheEntry,
     MLLMPrefixCacheManager,
@@ -434,7 +434,7 @@ class TestMLXMultimodalLMCache:
 
     def test_mllm_cache_enabled_by_default(self):
         """Test that cache is enabled by default in MLXMultimodalLM."""
-        from vllm_mlx.models.mllm import MLXMultimodalLM
+        from token_workshed_nextcore.models.mllm import MLXMultimodalLM
 
         model = MLXMultimodalLM("test-model")
         assert model.enable_cache is True
@@ -442,7 +442,7 @@ class TestMLXMultimodalLMCache:
 
     def test_mllm_cache_disabled(self):
         """Test disabling cache in MLXMultimodalLM."""
-        from vllm_mlx.models.mllm import MLXMultimodalLM
+        from token_workshed_nextcore.models.mllm import MLXMultimodalLM
 
         model = MLXMultimodalLM("test-model", enable_cache=False)
         assert model.enable_cache is False
@@ -450,14 +450,14 @@ class TestMLXMultimodalLMCache:
 
     def test_mllm_cache_custom_size(self):
         """Test custom cache size in MLXMultimodalLM."""
-        from vllm_mlx.models.mllm import MLXMultimodalLM
+        from token_workshed_nextcore.models.mllm import MLXMultimodalLM
 
         model = MLXMultimodalLM("test-model", cache_size=100)
         assert model._cache_manager.max_size == 100
 
     def test_mllm_get_cache_stats_disabled(self):
         """Test get_cache_stats when cache is disabled."""
-        from vllm_mlx.models.mllm import MLXMultimodalLM
+        from token_workshed_nextcore.models.mllm import MLXMultimodalLM
 
         model = MLXMultimodalLM("test-model", enable_cache=False)
         stats = model.get_cache_stats()
@@ -465,7 +465,7 @@ class TestMLXMultimodalLMCache:
 
     def test_mllm_get_cache_stats_enabled(self):
         """Test get_cache_stats when cache is enabled."""
-        from vllm_mlx.models.mllm import MLXMultimodalLM
+        from token_workshed_nextcore.models.mllm import MLXMultimodalLM
 
         model = MLXMultimodalLM("test-model", enable_cache=True)
         stats = model.get_cache_stats()
@@ -478,7 +478,7 @@ class TestMLXMultimodalLMCache:
 
     def test_mllm_clear_cache(self):
         """Test clearing cache in MLXMultimodalLM."""
-        from vllm_mlx.models.mllm import MLXMultimodalLM
+        from token_workshed_nextcore.models.mllm import MLXMultimodalLM
 
         model = MLXMultimodalLM("test-model", enable_cache=True)
 
@@ -555,7 +555,7 @@ if __name__ == "__main__":
         from mlx_vlm.utils import load_model, load_config
         from mlx_vlm.models import cache as vlm_cache
 
-        from vllm_mlx.benchmark import (
+        from token_workshed_nextcore.benchmark import (
             download_test_image,
             download_video,
             get_video_info,

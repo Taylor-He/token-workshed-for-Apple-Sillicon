@@ -1,5 +1,8 @@
 # Installation
 
+> **0.2.1 historical documentation.** These instructions target the retired vLLM-MLX runtime and are not valid NextCore commands. Use [the NextCore documentation](../nextcore/README.md) for current setup and capability status.
+
+
 ## Requirements
 
 - macOS on Apple Silicon (M1/M2/M3/M4)

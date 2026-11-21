@@ -1,5 +1,8 @@
 # Embeddings
 
+> **0.2.1 historical documentation.** These instructions target the retired vLLM-MLX runtime and are not valid NextCore commands. Use [the NextCore documentation](../nextcore/README.md) for current setup and capability status.
+
+
 vllm-mlx supports text embeddings using [mlx-embeddings](https://github.com/Blaizzy/mlx-embeddings), providing an OpenAI-compatible `/v1/embeddings` endpoint.
 
 ## Installation
@@ -115,7 +118,7 @@ Create embeddings for the given input text(s).
 ### Direct usage without server
 
 ```python
-from vllm_mlx.embedding import EmbeddingEngine
+from token_workshed_nextcore.embedding import EmbeddingEngine
 
 engine = EmbeddingEngine("mlx-community/all-MiniLM-L6-v2-4bit")
 engine.load()

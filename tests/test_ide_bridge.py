@@ -6,7 +6,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vllm_mlx.ide_bridge import (
+from token_workshed_nextcore.ide_bridge import (
     IDEAssistRequest,
     IDEBridge,
     IDEBridgeError,

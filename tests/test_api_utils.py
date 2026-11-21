@@ -3,11 +3,11 @@
 Tests for API utility functions.
 
 Tests clean_output_text, is_mllm_model, and extract_multimodal_content
-from vllm_mlx/api/utils.py. No MLX dependency.
+from token_workshed_nextcore/api/utils.py. No MLX dependency.
 """
 
-from vllm_mlx.api.models import ContentPart, ImageUrl, Message
-from vllm_mlx.api.utils import (
+from token_workshed_nextcore.api.models import ContentPart, ImageUrl, Message
+from token_workshed_nextcore.api.utils import (
     MLLM_PATTERNS,
     SPECIAL_TOKENS_PATTERN,
     _content_to_text,

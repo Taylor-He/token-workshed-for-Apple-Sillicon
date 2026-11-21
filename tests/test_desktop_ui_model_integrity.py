@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from vllm_mlx.desktop_ui import LocalModelServerManager
+from token_workshed_nextcore.desktop_ui import LocalModelServerManager
 
 
 def test_discovery_requests_automatic_integrity_cleanup(monkeypatch) -> None:
