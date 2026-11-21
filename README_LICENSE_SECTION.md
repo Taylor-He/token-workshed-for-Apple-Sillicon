@@ -1,5 +1,8 @@
-## License
+## License and attribution
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) for the full text.
+Token Workshed NextCore is an independent SGLang-based project released under
+the Apache License 2.0. The repository no longer uses vLLM-MLX as an inference
+runtime. Some files retain code from the earlier Token Workshed codebase;
+original copyright notices and applicable third-party terms remain in place.
 
-This project is derived from `vllm-mlx`, which is also distributed under the Apache License 2.0.
+See [LICENSE](LICENSE) and [NOTICE](NOTICE) for details.
